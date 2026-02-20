@@ -9,3 +9,9 @@ dependencies = [
 
 [project.scripts]
 gdtimings = "gdtimings.cli:main"
+
+[project.optional-dependencies]
+viz = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.2",
+]

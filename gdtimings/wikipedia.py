@@ -16,6 +16,8 @@ from html.parser import HTMLParser
 import requests
 
 from gdtimings.config import (
+    CATEGORY_COVERAGE,
+    RELEASE_COVERAGE_OVERRIDES,
     WIKIPEDIA_API,
     WIKIPEDIA_CATEGORIES,
     WIKIPEDIA_RATE_LIMIT,
@@ -51,9 +53,21 @@ def _session():
     return s
 
 
-def _api_get(session, params):
-    """Make a Wikipedia API request with rate limiting."""
+def _api_get(session, params, max_retries=3):
+    """Make a Wikipedia API request with rate limiting and retry."""
     params.setdefault("format", "json")
+    for attempt in range(max_retries):
+        resp = session.get(WIKIPEDIA_API, params=params)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
+            print(f"    HTTP {resp.status_code}, retrying in {retry_after}s "
+                  f"(attempt {attempt + 1}/{max_retries})")
+            time.sleep(retry_after)
+            continue
+        resp.raise_for_status()
+        time.sleep(WIKIPEDIA_RATE_LIMIT)
+        return resp.json()
+    # Final attempt — let it raise
     resp = session.get(WIKIPEDIA_API, params=params)
     resp.raise_for_status()
     time.sleep(WIKIPEDIA_RATE_LIMIT)
@@ -169,19 +183,6 @@ def parse_concert_date(recorded_str):
     return None
 
 
-def parse_venue_location(venue_str):
-    """Split venue text into (venue_name, city_state)."""
-    if not venue_str:
-        return None, None
-    # Common format: "VenueName, City, State"
-    parts = [p.strip() for p in venue_str.split(",")]
-    if len(parts) >= 3:
-        return parts[0], ", ".join(parts[1:])
-    elif len(parts) == 2:
-        return parts[0], parts[1]
-    return venue_str, None
-
-
 # ── Duration parsing ─────────────────────────────────────────────────
 
 def parse_duration(text):
@@ -219,11 +220,12 @@ def _parse_tracklist_tables(html_text):
     for table_match in table_pattern.finditer(html_text):
         table_html = table_match.group(1)
 
-        # Check for disc/side header just before this table
+        # Check for disc/side header just before this table (take last match
+        # in window to avoid picking up a header from a previous table)
         pre_text = html_text[max(0, table_match.start() - 500):table_match.start()]
-        disc_m = re.search(r'(?:Disc|Side|Set)\s*(\d+)', pre_text, re.IGNORECASE)
-        if disc_m:
-            disc = int(disc_m.group(1))
+        disc_matches = re.findall(r'(?:Disc|Side|Set)\s*(\d+)', pre_text, re.IGNORECASE)
+        if disc_matches:
+            disc = int(disc_matches[-1])
 
         # Parse rows
         row_pattern = re.compile(r'<tr>(.*?)</tr>', re.DOTALL)
@@ -345,9 +347,9 @@ def _parse_numbered_lists(html_text):
 
             track_num += 1
 
-            # Detect segue marker
+            # Detect segue marker (→ or > in text, or &gt; in raw HTML)
             segue = 1 if ("→" in li_text or ">" in li_text.rstrip() or
-                          ">" in li_html) else 0
+                          "&gt;" in li_html) else 0
 
             # Try to parse: "Title" (writers) – MM:SS
             # or: "Title" – MM:SS
@@ -415,8 +417,12 @@ def parse_tracks(html_text):
 
 # ── Main scraping logic ──────────────────────────────────────────────
 
-def scrape_album(conn, session, page_title, source_url=None):
+def scrape_album(conn, session, page_title, category=None, source_url=None):
     """Scrape a single album page and store in DB.
+
+    Args:
+        category: Wikipedia category this page belongs to (used to determine
+                  whether the release is a complete show or possibly edited).
 
     Returns (release_id, track_count) or (None, 0) if skipped/failed.
     """
@@ -432,7 +438,10 @@ def scrape_album(conn, session, page_title, source_url=None):
     # Parse infobox
     info = parse_infobox(html_text)
     concert_date = parse_concert_date(info.get("recorded"))
-    venue_name, coverage = parse_venue_location(info.get("venue"))
+    # Per-release override takes priority, then category default
+    coverage = RELEASE_COVERAGE_OVERRIDES.get(
+        page_title, CATEGORY_COVERAGE.get(category, "unknown")
+    )
 
     if not source_url:
         safe_title = page_title.replace(" ", "_")
@@ -445,7 +454,7 @@ def scrape_album(conn, session, page_title, source_url=None):
         source_id=page_title,
         title=page_title,
         concert_date=concert_date,
-        venue=venue_name,
+        venue=info.get("venue"),
         coverage=coverage,
         recording_type="official",
         quality_rank=500,
@@ -532,12 +541,17 @@ def scrape_all(conn, full=False, verbose=True):
         print(f"\n  Total: {len(work)} pages to process\n")
 
     # Phase 2: scrape each page with progress reporting
+    t_start = time.monotonic()
     for i, (category, page_title) in enumerate(work, 1):
         pct = i * 100 // len(work)
-        prefix = f"  [{i}/{len(work)} {pct:>3}%]"
+        elapsed = time.monotonic() - t_start
+        rate = i / elapsed if elapsed > 0 else 0
+        eta = (len(work) - i) / rate if rate > 0 else 0
+        prefix = f"  [{i}/{len(work)} {pct:>3}% {elapsed:.0f}s eta {eta:.0f}s]"
 
         try:
-            release_id, track_count = scrape_album(conn, session, page_title)
+            release_id, track_count = scrape_album(conn, session, page_title,
+                                                       category=category)
             if track_count > 0:
                 total_releases += 1
                 total_tracks += track_count

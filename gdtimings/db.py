@@ -114,7 +114,6 @@ def insert_release(conn, *, source_type, source_id, title=None, concert_date=Non
         (source_type, source_id, title, concert_date, venue, coverage,
          recording_type, quality_rank, release_date, label, source_url, now),
     )
-    conn.commit()
     return cur.lastrowid
 
 
@@ -126,7 +125,6 @@ def update_release(conn, release_id, **fields):
         f"UPDATE releases SET {set_clause} WHERE id = ?",
         (*fields.values(), release_id),
     )
-    conn.commit()
 
 
 # ── Songs ──────────────────────────────────────────────────────────────
@@ -140,7 +138,6 @@ def get_or_create_song(conn, canonical_name):
     cur = conn.execute(
         "INSERT INTO songs (canonical_name) VALUES (?)", (canonical_name,)
     )
-    conn.commit()
     return cur.lastrowid
 
 
@@ -156,7 +153,6 @@ def add_alias(conn, alias, song_id, alias_type="variant"):
         "INSERT OR IGNORE INTO song_aliases (alias, song_id, alias_type) VALUES (?, ?, ?)",
         (alias, song_id, alias_type),
     )
-    conn.commit()
 
 
 # ── Tracks ─────────────────────────────────────────────────────────────

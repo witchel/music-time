@@ -137,7 +137,6 @@ CANONICAL_SONGS = {
     "Mexicali Blues": [],
     "Might as Well": [],
     "Mission in the Rain": [],
-    "Mississippi Half-Step Uptown Toodeloo": [],
     "Money Money": [],
     "Morning Dew": [],
     "Mountains of the Moon": [],
@@ -159,6 +158,9 @@ CANONICAL_SONGS = {
     "Peggy-O": ["peggy o", "peggy-o"],
     "Picasso Moon": [],
     "Playing in the Band": ["playin' in the band", "playin in the band"],
+    "Playing in the Band Reprise": ["playin' in the band reprise",
+                                     "playin in the band reprise",
+                                     "pitb reprise"],
     "Promised Land": ["the promised land"],
     "Queen Jane Approximately": [],
     "Ramble On Rose": [],
@@ -203,15 +205,13 @@ CANONICAL_SONGS = {
     "US Blues": ["u.s. blues", "us blues"],
     "Victim or the Crime": [],
     "Viola Lee Blues": [],
-    "Warf Rat": ["wharf rat"],
+    "Wharf Rat": ["warf rat"],
     "Wave to the Wind": [],
     "Way to Go Home": [],
     "Weather Report Suite": [],
     "West L.A. Fadeaway": ["west la fadeaway", "west l.a. fadeaway"],
     "What's Become of the Baby": [],
-    "Wheel": [],
     "When I Paint My Masterpiece": [],
-    "Wharf Rat": [],
     "Women Are Smarter": [],
     "Werewolves of London": [],
 }
@@ -257,6 +257,12 @@ def clean_title(raw):
     s = re.sub(r"\s*[\[\(](?:Set|Disc|Encore)\s*\d*[\]\)]", "", s, flags=re.IGNORECASE)
     # Strip surrounding quotes
     s = s.strip('"\'')
+    # Strip segment labels for songs split across a show (Category B splits).
+    # These are labeled parts of ONE performance (e.g. Dark Star V1/V2) and
+    # must resolve to the same canonical song. Do NOT strip "Reprise" — that
+    # indicates a musically distinct song (Category A, see CONCEPTS.md).
+    s = re.sub(r'\s*\(?(V\d+|verse\s+\d+|part\s+\d+|continued)\)?\s*$', '', s,
+               flags=re.IGNORECASE)
     # Final cleanup: segue markers that may remain after other stripping
     s = s.rstrip(">→ ")
     s = re.sub(r"\s*[>→]\s*$", "", s)

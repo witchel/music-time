@@ -776,15 +776,15 @@ def plot_hilbert(conn):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 10. Gosper Spiral — continuous flowsnake, tile area ∝ duration
+# 10. Gosper Spiral — sunflower layout, tile area ∝ duration, overlap OK
 # ══════════════════════════════════════════════════════════════════════════
 def plot_gosper_flow(conn):
-    """Gosper curve tiles on an Archimedean spiral — one continuous line.
+    """Gosper curve tiles in a Fermat sunflower (golden-angle) layout.
 
-    Like plot #9 but with Gosper (flowsnake) curves instead of Hilbert,
-    tile size scales with duration (area ∝ duration), no bounding boxes,
-    and the curve is continuous — each tile's end connects to the next
-    tile's start along the spiral backbone.
+    Dense organic packing where tile size and Gosper order scale with
+    duration.  Long jams produce large, intricate curves that overflow
+    into neighboring space.  Short connector stubs hint at chronological
+    order.  Tiles drawn smallest-first so the epic jams render on top.
     """
 
     rows = conn.execute("""
@@ -812,7 +812,6 @@ def plot_gosper_flow(conn):
         raw = _gosper_points(order)
         delta = raw[-1] - raw[0]
         gosper_angle[order] = np.arctan2(delta[1], delta[0])
-        # Center at midpoint of start→end so start/end straddle the center
         mid = (raw[0] + raw[-1]) / 2
         centered = raw - mid
         extent = max(centered[:, 0].max() - centered[:, 0].min(),
@@ -834,91 +833,84 @@ def plot_gosper_flow(conn):
             orders[i] = 4
 
     # Tile size: area ∝ duration → linear size ∝ sqrt(duration)
-    min_tile = 0.25
-    max_tile = 1.1
+    min_tile = 0.3
+    max_tile = 3.0
     tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
 
-    # ── Archimedean spiral ──
-    growth = 0.25
-    r0 = 1.5
-    n_revolutions = 10
-    max_theta = 2 * np.pi * n_revolutions
+    # ── Fermat sunflower layout (golden angle) ──
+    golden_angle = np.pi * (3 - np.sqrt(5))   # ≈ 137.508°
+    spacing = 0.7
+    tile_cx = np.empty(n_perfs)
+    tile_cy = np.empty(n_perfs)
+    for i in range(n_perfs):
+        r = spacing * np.sqrt(i + 1)
+        theta = (i + 1) * golden_angle
+        tile_cx[i] = r * np.cos(theta)
+        tile_cy[i] = r * np.sin(theta)
 
-    n_fine = 30000
-    thetas_fine = np.linspace(0, max_theta, n_fine)
-    r_fine = r0 + growth * thetas_fine
-    x_fine = r_fine * np.cos(thetas_fine)
-    y_fine = r_fine * np.sin(thetas_fine)
-    ds = np.sqrt(np.diff(x_fine)**2 + np.diff(y_fine)**2)
-    arc = np.concatenate([[0], np.cumsum(ds)])
-    total_arc = arc[-1]
+    # Radii for year rings (monotonically increasing with index)
+    tile_rs = spacing * np.sqrt(np.arange(1, n_perfs + 1))
 
-    # Tangent angles along fine spiral
-    dx_fine = np.gradient(x_fine)
-    dy_fine = np.gradient(y_fine)
-    tang_fine = np.arctan2(dy_fine, dx_fine)
+    # ── Orient each tile toward next chronological performance ──
+    orient_angles = np.empty(n_perfs)
+    for i in range(n_perfs - 1):
+        dx = tile_cx[i + 1] - tile_cx[i]
+        dy = tile_cy[i + 1] - tile_cy[i]
+        orient_angles[i] = np.arctan2(dy, dx)
+    orient_angles[-1] = np.arctan2(tile_cy[-1], tile_cx[-1])
 
-    # ── Arc-length spacing proportional to tile size ──
-    cum_space = np.cumsum(tile_sizes)
-    margin = tile_sizes[0]
-    usable = total_arc - 2 * margin
-    target_arcs = margin + ((cum_space - cum_space[0])
-                            / (cum_space[-1] - cum_space[0]) * usable)
-
-    tile_thetas = np.interp(target_arcs, arc, thetas_fine)
-    tile_rs = r0 + growth * tile_thetas
-    tile_cx = tile_rs * np.cos(tile_thetas)
-    tile_cy = tile_rs * np.sin(tile_thetas)
-    tile_tangents = np.interp(target_arcs, arc, tang_fine)
-
-    # ── Build one continuous path as line segments ──
+    # ── Draw ──
     dur_norm = mcolors.Normalize(vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
+    lw_map = {1: 2.5, 2: 1.5, 3: 0.8, 4: 0.45}
 
-    all_segments = []
-    all_dur_values = []
-    all_linewidths = []
-    lw_map = {1: 2.0, 2: 1.2, 3: 0.7, 4: 0.4}
+    fig, ax = plt.subplots(figsize=(14, 16))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
 
-    prev_end = None
-    for idx in range(n_perfs):
+    # Track extents for axis limits
+    x_lo, x_hi = np.inf, -np.inf
+    y_lo, y_hi = np.inf, -np.inf
+
+    # Draw smallest tiles first so the epic jams render on top
+    draw_order = sorted(range(n_perfs), key=lambda i: durs[i])
+
+    for idx in draw_order:
         order = orders[idx]
         pts = gosper_norm[order].copy()
         size = tile_sizes[idx]
-        tang = tile_tangents[idx]
+        tang = orient_angles[idx]
 
-        # Rotate so the curve's start→end aligns with the spiral tangent
         rot = tang - gosper_angle[order]
         ca, sa = np.cos(rot), np.sin(rot)
         scaled = pts * size
         rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
         ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
 
-        # Connecting segment from previous tile's end
-        if prev_end is not None:
-            all_segments.append([prev_end, [rx[0], ry[0]]])
-            all_dur_values.append((durs[max(0, idx - 1)] + durs[idx]) / 2)
-            all_linewidths.append(0.4)
+        color = cmap(dur_norm(durs[idx]))
+        zorder = 1 + durs[idx] / max_dur
+        lw = lw_map[order]
 
-        # Gosper curve segments for this performance
-        for j in range(len(rx) - 1):
-            all_segments.append([[rx[j], ry[j]], [rx[j + 1], ry[j + 1]]])
-            all_dur_values.append(durs[idx])
-            all_linewidths.append(lw_map[order])
+        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.9,
+                solid_capstyle="round", zorder=zorder)
 
-        prev_end = [rx[-1], ry[-1]]
+        x_lo, x_hi = min(x_lo, rx.min()), max(x_hi, rx.max())
+        y_lo, y_hi = min(y_lo, ry.min()), max(y_hi, ry.max())
 
-    segments = np.array(all_segments)
-    lc = LineCollection(segments, cmap=cmap, norm=dur_norm,
-                        linewidths=all_linewidths, alpha=0.9)
-    lc.set_array(np.array(all_dur_values))
+        # Short connector stub toward next chronological performance
+        if idx < n_perfs - 1:
+            dx = tile_cx[idx + 1] - tile_cx[idx]
+            dy = tile_cy[idx + 1] - tile_cy[idx]
+            dist = np.sqrt(dx**2 + dy**2)
+            if dist > 0:
+                conn_len = size * 0.25
+                end_x = rx[-1] + conn_len * dx / dist
+                end_y = ry[-1] + conn_len * dy / dist
+                ax.plot([rx[-1], end_x], [ry[-1], end_y],
+                        color=color, linewidth=0.5, alpha=0.4,
+                        solid_capstyle="round", zorder=zorder - 0.1)
 
-    fig, ax = plt.subplots(figsize=(14, 14))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-    ax.add_collection(lc)
-
-    # ── Year rings at 12 o'clock ──
+    # ── Year rings ──
     unique_years = sorted(set(years))
     ring_years = unique_years[::3]
     if unique_years[-1] not in ring_years:
@@ -935,30 +927,32 @@ def plot_gosper_flow(conn):
                              edgecolor="#333344", linewidth=0.5,
                              linestyle="--", zorder=0)
         ax.add_patch(circle)
-        ax.text(0, ring_r + max_tile * 0.4, str(yr), color="#777788",
+        ax.text(0, ring_r + 0.4, str(yr), color="#777788",
                 fontsize=8, ha="center", va="bottom", fontweight="bold",
                 zorder=5)
 
-    all_x = segments[:, :, 0].ravel()
-    all_y = segments[:, :, 1].ravel()
-    pad = max_tile * 2
-    ax.set_xlim(all_x.min() - pad, all_x.max() + pad)
-    ax.set_ylim(all_y.min() - pad, all_y.max() + pad)
+    pad = max_tile * 0.5
+    ax.set_xlim(x_lo - pad, x_hi + pad)
+    ax.set_ylim(y_lo - pad, y_hi + pad)
     ax.set_aspect("equal")
     ax.axis("off")
+
+    # ── Legend area at top ──
     ax.set_title("Playing in the Band — Gosper Spiral\n"
                  "center → outward chronologically  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
-                 fontsize=11, pad=12, color="white")
+                 fontsize=11, pad=14, color="white")
 
+    # Horizontal colorbar above the plot
+    cax = fig.add_axes([0.25, 0.93, 0.50, 0.012])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
     sm.set_array([])
-    cb = fig.colorbar(sm, ax=ax, shrink=0.35, pad=0.02, aspect=30)
-    cb.set_label("Duration (minutes)", color="white")
-    cb.ax.yaxis.set_tick_params(color="white")
-    plt.setp(cb.ax.yaxis.get_ticklabels(), color="white")
+    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
+    cb.set_label("Duration (minutes)", color="white", fontsize=9, labelpad=4)
+    cb.ax.xaxis.set_tick_params(color="white", labelsize=8)
+    cb.ax.xaxis.set_label_position("top")
+    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
 
-    fig.tight_layout()
     fig.savefig(OUTPUT_DIR / "10_gosper_flow_playing_in_band.png", dpi=200,
                 facecolor=fig.get_facecolor())
     plt.close(fig)

@@ -15,7 +15,6 @@ import time
 import requests
 
 from gdtimings.config import (
-    ARCHIVE_API_URL,
     ARCHIVE_METADATA_URL,
     ARCHIVE_RATE_LIMIT,
     ARCHIVE_SCRAPE_URL,

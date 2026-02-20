@@ -20,21 +20,43 @@ US_STATE_ABBREV = {
 # Reverse lookup: full name → full name (for pass-through)
 _FULL_STATE_NAMES = {v: v for v in US_STATE_ABBREV.values()}
 
+# Informal abbreviations (uppercase, no dots) → full name
+_INFORMAL_ABBREV = {
+    "MASS": "Massachusetts",
+    "CONN": "Connecticut",
+    "PENN": "Pennsylvania",
+    "CALIF": "California",
+    "WASH": "Washington",
+    "MINN": "Minnesota",
+    "TENN": "Tennessee",
+    "WISC": "Wisconsin",
+}
+
 
 def normalize_state(raw):
     """Convert state abbreviation to full name, or pass through full names.
 
     Returns None if input is None/empty.
+    Handles trailing punctuation (e.g. "CT.", "Mass.", "R.I.", "PA,").
     Non-US locations (e.g. "Ontario") are passed through unchanged.
     """
     if not raw:
         return None
-    raw = raw.strip()
+    raw = raw.strip().rstrip(".,")
+    if not raw:
+        return None
     upper = raw.upper()
     if upper in US_STATE_ABBREV:
         return US_STATE_ABBREV[upper]
     if raw in _FULL_STATE_NAMES:
         return raw
+    # Handle dotted abbreviations: "R.I." → "RI", "D.C." → "DC", "N.J." → "NJ"
+    nodots = upper.replace(".", "")
+    if nodots in US_STATE_ABBREV:
+        return US_STATE_ABBREV[nodots]
+    # Handle common informal abbreviations
+    if nodots in _INFORMAL_ABBREV:
+        return _INFORMAL_ABBREV[nodots]
     # Non-US or unrecognized — pass through as-is
     return raw
 

@@ -88,7 +88,6 @@ RELEASE_COVERAGE_OVERRIDES = {
 }
 
 # ── Internet Archive ──────────────────────────────────────────────────
-ARCHIVE_API_URL = "https://archive.org/advancedsearch.php"
 ARCHIVE_SCRAPE_URL = "https://archive.org/services/search/v1/scrape"
 ARCHIVE_METADATA_URL = "https://archive.org/metadata/{identifier}"
 ARCHIVE_USER_AGENT = "GDTimingsBot/1.0 (Grateful Dead song timings research)"

@@ -12,8 +12,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from matplotlib.collections import LineCollection
 import numpy as np
+
+from gdtimings.location import US_STATE_ABBREV
 
 # ── Config ────────────────────────────────────────────────────────────────
 DB_PATH = os.path.expanduser("~/.gdtimings/gdtimings.db")
@@ -57,23 +58,24 @@ STATE_GRID = {
 }
 
 
-# Full state name → abbreviation (DB stores full names like "California").
-STATE_NAME_TO_ABBR = {
-    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
-    "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE",
-    "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID",
-    "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS",
-    "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
-    "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
-    "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE",
-    "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ",
-    "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
-    "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR",
-    "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC",
-    "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT",
-    "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
-    "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
-    "District of Columbia": "DC",
+# Full state name → abbreviation (derived from gdtimings.location canonical source).
+STATE_NAME_TO_ABBR = {v: k for k, v in US_STATE_ABBREV.items()}
+
+
+# ── Season/tour classification (Option C) ─────────────────────────────
+# Spring: Feb–May, Summer: Jun–Sep, Fall/Winter: Oct–Jan
+MONTH_TO_SEASON = {
+    1: "Fall/Winter", 2: "Spring", 3: "Spring", 4: "Spring",
+    5: "Spring", 6: "Summer", 7: "Summer", 8: "Summer",
+    9: "Summer", 10: "Fall/Winter", 11: "Fall/Winter", 12: "Fall/Winter",
+}
+# Each season gets a 120° angular sector; Spring at top.
+_SECTOR_WIDTH = 2 * np.pi / 3
+_SECTOR_MARGIN = np.radians(3)
+SEASON_SECTORS = {
+    "Spring":      np.radians(30),   # 30°–150°  (centered at top)
+    "Summer":      np.radians(150),  # 150°–270° (centered lower-left)
+    "Fall/Winter": np.radians(270),  # 270°–390° (centered lower-right)
 }
 
 
@@ -97,10 +99,14 @@ def get_conn():
 # ══════════════════════════════════════════════════════════════════════════
 def plot_terrain(conn):
     rows = conn.execute("""
-        SELECT sub.concert_date, AVG(sub.max_dur) / 60.0 AS dur_min, sub.state
+        SELECT sub.concert_date, sub.max_dur / 60.0 AS dur_min, sub.state
         FROM (
-            SELECT r.concert_date, r.state, r.id,
-                   MAX(t.duration_seconds) AS max_dur
+            SELECT r.concert_date, r.state,
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
             FROM tracks t
             JOIN songs s ON t.song_id = s.id
             JOIN releases r ON t.release_id = r.id
@@ -109,7 +115,7 @@ def plot_terrain(conn):
               AND r.concert_date IS NOT NULL
             GROUP BY r.concert_date, r.id
         ) sub
-        GROUP BY sub.concert_date
+        WHERE sub.rn = 1
         ORDER BY sub.concert_date
     """).fetchall()
 
@@ -156,15 +162,26 @@ def plot_terrain(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_heatmap(conn):
     rows = conn.execute("""
-        SELECT s.canonical_name AS song, r.concert_year AS year,
-               AVG(t.duration_seconds) / 60.0 AS avg_min,
+        SELECT sub.song, sub.year,
+               AVG(sub.max_dur) / 60.0 AS avg_min,
                COUNT(*) AS n
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE t.duration_seconds IS NOT NULL
-          AND r.concert_year IS NOT NULL
-        GROUP BY s.canonical_name, r.concert_year
+        FROM (
+            SELECT s.canonical_name AS song, r.concert_year AS year,
+                   r.concert_date, MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.canonical_name, r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE t.duration_seconds IS NOT NULL
+              AND r.concert_year IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY s.canonical_name, r.concert_date, r.id
+        ) sub
+        WHERE sub.rn = 1
+        GROUP BY sub.song, sub.year
     """).fetchall()
 
     # Find top 30 songs by total performances
@@ -206,11 +223,15 @@ def plot_heatmap(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_polar(conn):
     rows = conn.execute("""
-        SELECT sub.concert_date, AVG(sub.max_dur) / 60.0 AS dur_min, sub.sn
+        SELECT sub.concert_date, sub.max_dur / 60.0 AS dur_min, sub.sn
         FROM (
-            SELECT r.concert_date, r.id,
+            SELECT r.concert_date,
                    COALESCE(LOWER(t.set_name), 'unknown') AS sn,
-                   MAX(t.duration_seconds) AS max_dur
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
             FROM tracks t
             JOIN songs s ON t.song_id = s.id
             JOIN releases r ON t.release_id = r.id
@@ -219,7 +240,7 @@ def plot_polar(conn):
               AND r.concert_date IS NOT NULL
             GROUP BY r.concert_date, r.id
         ) sub
-        GROUP BY sub.concert_date
+        WHERE sub.rn = 1
         ORDER BY sub.concert_date
     """).fetchall()
 
@@ -276,14 +297,25 @@ def plot_polar(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_streamgraph(conn):
     rows = conn.execute("""
-        SELECT s.canonical_name AS song, r.concert_year AS year,
-               SUM(t.duration_seconds) / 3600.0 AS total_hours
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE t.duration_seconds IS NOT NULL
-          AND r.concert_year IS NOT NULL
-        GROUP BY s.canonical_name, r.concert_year
+        SELECT sub.song, sub.year,
+               SUM(sub.max_dur) / 3600.0 AS total_hours
+        FROM (
+            SELECT s.canonical_name AS song, r.concert_year AS year,
+                   r.concert_date, MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.canonical_name, r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE t.duration_seconds IS NOT NULL
+              AND r.concert_year IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY s.canonical_name, r.concert_date, r.id
+        ) sub
+        WHERE sub.rn = 1
+        GROUP BY sub.song, sub.year
     """).fetchall()
 
     # Find top 10 songs by total time (excluding utility tracks)
@@ -341,8 +373,12 @@ def plot_geographic(conn):
         SELECT sub.state, AVG(sub.max_dur) / 60.0 AS avg_min,
                COUNT(*) AS n
         FROM (
-            SELECT r.state, r.concert_date, r.id,
-                   MAX(t.duration_seconds) AS max_dur
+            SELECT r.state, r.concert_date,
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
             FROM tracks t
             JOIN songs s ON t.song_id = s.id
             JOIN releases r ON t.release_id = r.id
@@ -351,6 +387,7 @@ def plot_geographic(conn):
               AND r.state IS NOT NULL
             GROUP BY r.concert_date, r.id
         ) sub
+        WHERE sub.rn = 1
         GROUP BY sub.state
     """).fetchall()
 
@@ -411,15 +448,26 @@ def plot_geographic(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_small_multiples(conn):
     rows = conn.execute("""
-        SELECT s.canonical_name AS song, r.concert_year AS year,
-               AVG(t.duration_seconds) / 60.0 AS avg_min,
+        SELECT sub.song, sub.year,
+               AVG(sub.max_dur) / 60.0 AS avg_min,
                COUNT(*) AS n
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE t.duration_seconds IS NOT NULL
-          AND r.concert_year IS NOT NULL
-        GROUP BY s.canonical_name, r.concert_year
+        FROM (
+            SELECT s.canonical_name AS song, r.concert_year AS year,
+                   r.concert_date, MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.canonical_name, r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE t.duration_seconds IS NOT NULL
+              AND r.concert_year IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY s.canonical_name, r.concert_date, r.id
+        ) sub
+        WHERE sub.rn = 1
+        GROUP BY sub.song, sub.year
     """).fetchall()
 
     # Top 20 songs by performance count (excluding utility tracks)
@@ -477,13 +525,25 @@ def plot_small_multiples(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_duration_variability(conn):
     rows = conn.execute("""
-        SELECT s.canonical_name AS song, r.concert_year AS year,
-               t.duration_seconds / 60.0 AS dur_min
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE t.duration_seconds IS NOT NULL
-          AND r.concert_year IS NOT NULL
+        SELECT sub.song, sub.year,
+               sub.max_dur / 60.0 AS dur_min
+        FROM (
+            SELECT s.canonical_name AS song, r.concert_year AS year,
+                   r.concert_date,
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.canonical_name, r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE t.duration_seconds IS NOT NULL
+              AND r.concert_year IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY s.canonical_name, r.concert_date, r.id
+        ) sub
+        WHERE sub.rn = 1
     """).fetchall()
 
     # Group by (song, year)
@@ -528,10 +588,14 @@ def plot_duration_variability(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_envelope(conn):
     rows = conn.execute("""
-        SELECT sub.concert_date, AVG(sub.max_dur) / 60.0 AS dur_min
+        SELECT sub.concert_date, sub.max_dur / 60.0 AS dur_min
         FROM (
-            SELECT r.concert_date, r.id,
-                   MAX(t.duration_seconds) AS max_dur
+            SELECT r.concert_date,
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
             FROM tracks t
             JOIN songs s ON t.song_id = s.id
             JOIN releases r ON t.release_id = r.id
@@ -540,7 +604,7 @@ def plot_envelope(conn):
               AND r.concert_date IS NOT NULL
             GROUP BY r.concert_date, r.id
         ) sub
-        GROUP BY sub.concert_date
+        WHERE sub.rn = 1
         ORDER BY sub.concert_date
     """).fetchall()
 
@@ -663,10 +727,14 @@ def _gosper_points(order):
 def plot_hilbert(conn):
     rows = conn.execute("""
         SELECT sub.concert_date, sub.concert_year,
-               AVG(sub.max_dur) / 60.0 AS dur_min
+               sub.max_dur / 60.0 AS dur_min
         FROM (
-            SELECT r.concert_date, r.concert_year, r.id,
-                   MAX(t.duration_seconds) AS max_dur
+            SELECT r.concert_date, r.concert_year,
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
             FROM tracks t
             JOIN songs s ON t.song_id = s.id
             JOIN releases r ON t.release_id = r.id
@@ -675,7 +743,7 @@ def plot_hilbert(conn):
               AND r.concert_date IS NOT NULL
             GROUP BY r.concert_date, r.id
         ) sub
-        GROUP BY sub.concert_date
+        WHERE sub.rn = 1
         ORDER BY sub.concert_date
     """).fetchall()
 
@@ -706,10 +774,14 @@ def plot_hilbert(conn):
     max_tile = 3.0
     tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
 
-    # ── Fermat sunflower layout with era breaks ──
-    gap_after = {1974: 40, 1986: 50}
+    # ── Fermat sunflower layout with season sectors and era break ──
+    gap_after = {1974: 40}
     golden_angle = np.pi * (3 - np.sqrt(5))
     spacing = 0.7
+
+    # Classify each performance into touring season
+    months = np.array([int(r["concert_date"][5:7]) for r in rows])
+    seasons = [MONTH_TO_SEASON[m] for m in months]
 
     adjusted = np.empty(n_tiles, dtype=float)
     offset = 0
@@ -720,13 +792,19 @@ def plot_hilbert(conn):
                     offset += gsize
         adjusted[i] = i + 1 + offset
 
+    # Radius from chronological order, angle from season sector
+    effective_width = _SECTOR_WIDTH - 2 * _SECTOR_MARGIN
+    season_counts = {"Spring": 0, "Summer": 0, "Fall/Winter": 0}
     tile_cx = np.empty(n_tiles)
     tile_cy = np.empty(n_tiles)
     for i in range(n_tiles):
         r = spacing * np.sqrt(adjusted[i])
-        theta = adjusted[i] * golden_angle
+        s = seasons[i]
+        theta_in_sector = (season_counts[s] * golden_angle) % effective_width
+        theta = SEASON_SECTORS[s] + _SECTOR_MARGIN + theta_in_sector
         tile_cx[i] = r * np.cos(theta)
         tile_cy[i] = r * np.sin(theta)
+        season_counts[s] += 1
 
     tile_rs = spacing * np.sqrt(adjusted)
 
@@ -790,10 +868,24 @@ def plot_hilbert(conn):
                                  linestyle="-", alpha=0.6, zorder=3)
             ax.add_patch(circle)
 
-        label = "1975 hiatus" if gy == 1974 else str(gy + 1)
-        ax.text(0, mid_r, label, color="#99aabb", fontsize=11,
+        ax.text(0, mid_r, str(gy + 1), color="#99aabb", fontsize=11,
                 ha="center", va="center", fontweight="bold", zorder=5,
                 bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=2))
+
+    # ── Season divider lines and labels ──
+    max_r = tile_rs.max() + max_tile
+    for base_angle in SEASON_SECTORS.values():
+        ax.plot([0, max_r * np.cos(base_angle)],
+                [0, max_r * np.sin(base_angle)],
+                color="#667788", linewidth=1.0, alpha=0.5,
+                linestyle="--", zorder=3)
+    for name, base_angle in SEASON_SECTORS.items():
+        mid_angle = base_angle + _SECTOR_WIDTH / 2
+        label_r = max_r * 0.92
+        ax.text(label_r * np.cos(mid_angle), label_r * np.sin(mid_angle),
+                name, color="#99aabb", fontsize=13,
+                ha="center", va="center", fontweight="bold", zorder=5,
+                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=3, alpha=0.8))
 
     pad = max_tile * 0.5
     ax.set_xlim(x_lo - pad, x_hi + pad)
@@ -826,20 +918,24 @@ def plot_hilbert(conn):
 # 10. Gosper Spiral — sunflower layout, era breaks, tile area ∝ duration
 # ══════════════════════════════════════════════════════════════════════════
 def plot_gosper_flow(conn):
-    """Gosper curve tiles in a Fermat sunflower (golden-angle) layout.
+    """Gosper curve tiles in a Fermat sunflower layout with seasonal sectors.
 
     Dense organic packing where tile size and Gosper order scale with
     duration.  Long jams produce large, intricate curves that overflow
-    into neighboring space.  Visual breaks separate three eras:
-    1970-1974 (exploratory), 1976-1986 (comeback), 1987+ (twilight).
+    into neighboring space.  Three angular sectors show Spring (Feb-May),
+    Summer (Jun-Sep), and Fall/Winter (Oct-Jan) touring seasons.
     """
 
     rows = conn.execute("""
         SELECT sub.concert_date, sub.concert_year,
-               AVG(sub.max_dur) / 60.0 AS dur_min
+               sub.max_dur / 60.0 AS dur_min
         FROM (
-            SELECT r.concert_date, r.concert_year, r.id,
-                   MAX(t.duration_seconds) AS max_dur
+            SELECT r.concert_date, r.concert_year,
+                   MAX(t.duration_seconds) AS max_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
             FROM tracks t
             JOIN songs s ON t.song_id = s.id
             JOIN releases r ON t.release_id = r.id
@@ -848,7 +944,7 @@ def plot_gosper_flow(conn):
               AND r.concert_date IS NOT NULL
             GROUP BY r.concert_date, r.id
         ) sub
-        GROUP BY sub.concert_date
+        WHERE sub.rn = 1
         ORDER BY sub.concert_date
     """).fetchall()
 
@@ -889,12 +985,14 @@ def plot_gosper_flow(conn):
     max_tile = 3.0
     tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
 
-    # ── Fermat sunflower layout with era breaks ──
-    # Insert phantom indices at era boundaries to create visible gaps.
-    # Eras: 1970-1974 (hiatus follows), 1976-1986, 1987+
-    gap_after = {1974: 40, 1986: 50}   # year → phantom positions to skip
+    # ── Fermat sunflower layout with season sectors and era break ──
+    gap_after = {1974: 40}
     golden_angle = np.pi * (3 - np.sqrt(5))   # ≈ 137.508°
     spacing = 0.7
+
+    # Classify each performance into touring season
+    months = np.array([int(r["concert_date"][5:7]) for r in rows])
+    seasons = [MONTH_TO_SEASON[m] for m in months]
 
     adjusted = np.empty(n_perfs, dtype=float)
     offset = 0
@@ -905,23 +1003,24 @@ def plot_gosper_flow(conn):
                     offset += gsize
         adjusted[i] = i + 1 + offset
 
+    # Radius from chronological order, angle from season sector
+    effective_width = _SECTOR_WIDTH - 2 * _SECTOR_MARGIN
+    season_counts = {"Spring": 0, "Summer": 0, "Fall/Winter": 0}
     tile_cx = np.empty(n_perfs)
     tile_cy = np.empty(n_perfs)
     for i in range(n_perfs):
         r = spacing * np.sqrt(adjusted[i])
-        theta = adjusted[i] * golden_angle
+        s = seasons[i]
+        theta_in_sector = (season_counts[s] * golden_angle) % effective_width
+        theta = SEASON_SECTORS[s] + _SECTOR_MARGIN + theta_in_sector
         tile_cx[i] = r * np.cos(theta)
         tile_cy[i] = r * np.sin(theta)
+        season_counts[s] += 1
 
     tile_rs = spacing * np.sqrt(adjusted)
 
-    # ── Orient each tile toward next chronological performance ──
-    orient_angles = np.empty(n_perfs)
-    for i in range(n_perfs - 1):
-        dx = tile_cx[i + 1] - tile_cx[i]
-        dy = tile_cy[i + 1] - tile_cy[i]
-        orient_angles[i] = np.arctan2(dy, dx)
-    orient_angles[-1] = np.arctan2(tile_cy[-1], tile_cx[-1])
+    # ── Orient each tile radially outward ──
+    orient_angles = np.arctan2(tile_cy, tile_cx)
 
     # ── Draw (power-law color scale for better contrast) ──
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
@@ -960,19 +1059,6 @@ def plot_gosper_flow(conn):
         x_lo, x_hi = min(x_lo, rx.min()), max(x_hi, rx.max())
         y_lo, y_hi = min(y_lo, ry.min()), max(y_hi, ry.max())
 
-        # Short connector stub toward next chronological performance
-        if idx < n_perfs - 1:
-            dx = tile_cx[idx + 1] - tile_cx[idx]
-            dy = tile_cy[idx + 1] - tile_cy[idx]
-            dist = np.sqrt(dx**2 + dy**2)
-            if dist > 0:
-                conn_len = size * 0.25
-                end_x = rx[-1] + conn_len * dx / dist
-                end_y = ry[-1] + conn_len * dy / dist
-                ax.plot([rx[-1], end_x], [ry[-1], end_y],
-                        color=color, linewidth=0.5, alpha=0.4,
-                        solid_capstyle="round", zorder=zorder - 0.1)
-
     # ── Era break rings and labels ──
     for gy, gsize in gap_after.items():
         # Find last performance at or before gap year, first after
@@ -990,14 +1076,24 @@ def plot_gosper_flow(conn):
                                  linestyle="-", alpha=0.6, zorder=3)
             ax.add_patch(circle)
 
-        # Era label at 12 o'clock in the gap
-        if gy == 1974:
-            label = "1975 hiatus"
-        else:
-            label = str(gy + 1)
-        ax.text(0, mid_r, label, color="#99aabb", fontsize=11,
+        ax.text(0, mid_r, str(gy + 1), color="#99aabb", fontsize=11,
                 ha="center", va="center", fontweight="bold", zorder=5,
                 bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=2))
+
+    # ── Season divider lines and labels ──
+    max_r = tile_rs.max() + max_tile
+    for base_angle in SEASON_SECTORS.values():
+        ax.plot([0, max_r * np.cos(base_angle)],
+                [0, max_r * np.sin(base_angle)],
+                color="#667788", linewidth=1.0, alpha=0.5,
+                linestyle="--", zorder=3)
+    for name, base_angle in SEASON_SECTORS.items():
+        mid_angle = base_angle + _SECTOR_WIDTH / 2
+        label_r = max_r * 0.92
+        ax.text(label_r * np.cos(mid_angle), label_r * np.sin(mid_angle),
+                name, color="#99aabb", fontsize=13,
+                ha="center", va="center", fontweight="bold", zorder=5,
+                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=3, alpha=0.8))
 
     pad = max_tile * 0.5
     ax.set_xlim(x_lo - pad, x_hi + pad)

@@ -1,0 +1,11 @@
+[project]
+name = "gdtimings"
+version = "0.1.0"
+description = "Grateful Dead Song Timings Database"
+requires-python = ">=3.12"
+dependencies = [
+    "requests",
+]
+
+[project.scripts]
+gdtimings = "gdtimings.cli:main"

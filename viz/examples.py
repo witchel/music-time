@@ -685,118 +685,137 @@ def plot_hilbert(conn):
     max_dur = durs.max()
 
     # Pre-compute Hilbert curves at multiple orders.
-    orders = [2, 3, 4, 5]
-    curves = {o: _hilbert_points(o) for o in orders}
-    grids = {o: 2 ** o for o in orders}
+    h_orders = [2, 3, 4, 5]
+    curves = {o: _hilbert_points(o) for o in h_orders}
+    grids = {o: 2 ** o for o in h_orders}
 
-    # ── Archimedean spiral layout ──
-    # Place tiles at equal arc-length intervals along r = r0 + b*θ.
-    # This keeps consecutive performances spatially adjacent (readable order).
-    tile_size = 0.85
-    r0 = 1.2
-    growth = 0.22         # ring gap = growth * 2π ≈ 1.38 > tile_size
-    n_revolutions = 8
-    max_theta = 2 * np.pi * n_revolutions
+    # ── Choose order & tile size per performance ──
+    tile_orders = np.empty(n_tiles, dtype=int)
+    for i, d in enumerate(durs):
+        if d < 5:
+            tile_orders[i] = 2
+        elif d < 10:
+            tile_orders[i] = 3
+        elif d < 18:
+            tile_orders[i] = 4
+        else:
+            tile_orders[i] = 5
 
-    # Build a fine spiral to compute arc length
-    n_fine = 20000
-    thetas_fine = np.linspace(0, max_theta, n_fine)
-    r_fine = r0 + growth * thetas_fine
-    x_fine = r_fine * np.cos(thetas_fine)
-    y_fine = r_fine * np.sin(thetas_fine)
-    ds = np.sqrt(np.diff(x_fine)**2 + np.diff(y_fine)**2)
-    arc = np.concatenate([[0], np.cumsum(ds)])
+    # Tile size: area ∝ duration → linear size ∝ sqrt(duration)
+    min_tile = 0.3
+    max_tile = 3.0
+    tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
 
-    # Place tiles at equal arc-length intervals
-    target_arcs = np.linspace(0, arc[-1], n_tiles + 2)[1:-1]
-    tile_thetas = np.interp(target_arcs, arc, thetas_fine)
-    tile_rs = r0 + growth * tile_thetas
-    tile_cx = tile_rs * np.cos(tile_thetas)
-    tile_cy = tile_rs * np.sin(tile_thetas)
+    # ── Fermat sunflower layout with era breaks ──
+    gap_after = {1974: 40, 1986: 50}
+    golden_angle = np.pi * (3 - np.sqrt(5))
+    spacing = 0.7
 
-    # ── Color = duration ──
-    dur_norm = mcolors.Normalize(vmin=durs.min(), vmax=durs.max())
+    adjusted = np.empty(n_tiles, dtype=float)
+    offset = 0
+    for i in range(n_tiles):
+        if i > 0:
+            for gy, gsize in gap_after.items():
+                if years[i - 1] <= gy < years[i]:
+                    offset += gsize
+        adjusted[i] = i + 1 + offset
+
+    tile_cx = np.empty(n_tiles)
+    tile_cy = np.empty(n_tiles)
+    for i in range(n_tiles):
+        r = spacing * np.sqrt(adjusted[i])
+        theta = adjusted[i] * golden_angle
+        tile_cx[i] = r * np.cos(theta)
+        tile_cy[i] = r * np.sin(theta)
+
+    tile_rs = spacing * np.sqrt(adjusted)
+
+    # ── Color = duration (power-law scale) ──
+    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
 
-    fig, ax = plt.subplots(figsize=(14, 14))
+    fig, ax = plt.subplots(figsize=(14, 16))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
-    for idx in range(n_tiles):
+    x_lo, x_hi = np.inf, -np.inf
+    y_lo, y_hi = np.inf, -np.inf
+
+    # Draw smallest tiles first so the epic jams render on top
+    draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
+
+    lw_map = {2: 2.0, 3: 1.2, 4: 0.7, 5: 0.45}
+
+    for idx in draw_order:
+        size = tile_sizes[idx]
         cx, cy = tile_cx[idx], tile_cy[idx]
-        ox = cx - tile_size / 2
-        oy = cy - tile_size / 2
+        ox = cx - size / 2
+        oy = cy - size / 2
 
         dur = durs[idx]
         color = cmap(dur_norm(dur))
-
-        # Subtle tile background
-        ax.add_patch(plt.Rectangle((ox - 0.02, oy - 0.02), tile_size + 0.04,
-                                   tile_size + 0.04, facecolor="#252545",
-                                   edgecolor="none", zorder=1))
-
-        # Pick discrete Hilbert order based on duration
-        if dur < 5:
-            order = 2
-        elif dur < 10:
-            order = 3
-        elif dur < 18:
-            order = 4
-        else:
-            order = 5
+        order = tile_orders[idx]
         pts = curves[order]
         grid_n = grids[order]
 
-        # Scale points into the tile
-        margin = 0.06
-        span = tile_size - 2 * margin
+        margin = 0.06 * size
+        span = size - 2 * margin
         denom = max(grid_n - 1, 1)
         xs = [ox + margin + (p[0] / denom) * span for p in pts]
         ys = [oy + margin + (p[1] / denom) * span for p in pts]
 
-        lw = {2: 2.0, 3: 1.2, 4: 0.7, 5: 0.45}[order]
+        zorder = 1 + durs[idx] / max_dur
+        lw = lw_map[order]
         ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.9,
-                solid_capstyle="round", zorder=2)
+                solid_capstyle="round", zorder=zorder)
 
-    # ── Year rings at 12 o'clock ──
-    unique_years = sorted(set(years))
-    ring_years = unique_years[::3]
-    if unique_years[-1] not in ring_years:
-        ring_years.append(unique_years[-1])
+        x_lo = min(x_lo, min(xs))
+        x_hi = max(x_hi, max(xs))
+        y_lo = min(y_lo, min(ys))
+        y_hi = max(y_hi, max(ys))
 
-    for yr in ring_years:
-        yr_mask = years >= yr
-        if not yr_mask.any():
+    # ── Era break rings and labels ──
+    for gy, gsize in gap_after.items():
+        before = np.where(years <= gy)[0]
+        after = np.where(years > gy)[0]
+        if len(before) == 0 or len(after) == 0:
             continue
-        pi = np.where(yr_mask)[0][0]
-        ring_r = tile_rs[pi]
+        inner_r = tile_rs[before[-1]]
+        outer_r = tile_rs[after[0]]
+        mid_r = (inner_r + outer_r) / 2
 
-        circle = plt.Circle((0, 0), ring_r, fill=False,
-                             edgecolor="#333344", linewidth=0.5,
-                             linestyle="--", zorder=0)
-        ax.add_patch(circle)
-        ax.text(0, ring_r + tile_size * 0.6, str(yr), color="#777788",
-                fontsize=8, ha="center", va="bottom", fontweight="bold",
-                zorder=5)
+        for ring_r in (inner_r, outer_r):
+            circle = plt.Circle((0, 0), ring_r, fill=False,
+                                 edgecolor="#667788", linewidth=1.0,
+                                 linestyle="-", alpha=0.6, zorder=3)
+            ax.add_patch(circle)
 
-    pad = tile_size * 2
-    ax.set_xlim(tile_cx.min() - pad, tile_cx.max() + pad)
-    ax.set_ylim(tile_cy.min() - pad, tile_cy.max() + pad)
+        label = "1975 hiatus" if gy == 1974 else str(gy + 1)
+        ax.text(0, mid_r, label, color="#99aabb", fontsize=11,
+                ha="center", va="center", fontweight="bold", zorder=5,
+                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=2))
+
+    pad = max_tile * 0.5
+    ax.set_xlim(x_lo - pad, x_hi + pad)
+    ax.set_ylim(y_lo - pad, y_hi + pad)
     ax.set_aspect("equal")
     ax.axis("off")
-    ax.set_title("Playing in the Band — Hilbert Spiral\n"
-                 "center = first performance (1971), spiraling outward  ·  "
-                 "density & color ∝ duration",
-                 fontsize=11, pad=12, color="white")
 
+    # ── Legend area at top ──
+    ax.set_title("Playing in the Band — Hilbert Spiral\n"
+                 "center → outward chronologically  ·  "
+                 "tile area & complexity ∝ duration  ·  color = duration",
+                 fontsize=14, pad=14, color="white")
+
+    cax = fig.add_axes([0.20, 0.93, 0.60, 0.015])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
     sm.set_array([])
-    cb = fig.colorbar(sm, ax=ax, shrink=0.35, pad=0.02, aspect=30)
-    cb.set_label("Duration (minutes)", color="white")
-    cb.ax.yaxis.set_tick_params(color="white")
-    plt.setp(cb.ax.yaxis.get_ticklabels(), color="white")
+    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
+    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
+    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
+    cb.ax.xaxis.set_label_position("top")
+    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
 
-    fig.tight_layout()
     fig.savefig(OUTPUT_DIR / "09_hilbert_playing_in_band.png", dpi=200,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -804,15 +823,15 @@ def plot_hilbert(conn):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 10. Gosper Spiral — sunflower layout, tile area ∝ duration, overlap OK
+# 10. Gosper Spiral — sunflower layout, era breaks, tile area ∝ duration
 # ══════════════════════════════════════════════════════════════════════════
 def plot_gosper_flow(conn):
     """Gosper curve tiles in a Fermat sunflower (golden-angle) layout.
 
     Dense organic packing where tile size and Gosper order scale with
     duration.  Long jams produce large, intricate curves that overflow
-    into neighboring space.  Short connector stubs hint at chronological
-    order.  Tiles drawn smallest-first so the epic jams render on top.
+    into neighboring space.  Visual breaks separate three eras:
+    1970-1974 (exploratory), 1976-1986 (comeback), 1987+ (twilight).
     """
 
     rows = conn.execute("""
@@ -870,19 +889,31 @@ def plot_gosper_flow(conn):
     max_tile = 3.0
     tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
 
-    # ── Fermat sunflower layout (golden angle) ──
+    # ── Fermat sunflower layout with era breaks ──
+    # Insert phantom indices at era boundaries to create visible gaps.
+    # Eras: 1970-1974 (hiatus follows), 1976-1986, 1987+
+    gap_after = {1974: 40, 1986: 50}   # year → phantom positions to skip
     golden_angle = np.pi * (3 - np.sqrt(5))   # ≈ 137.508°
     spacing = 0.7
+
+    adjusted = np.empty(n_perfs, dtype=float)
+    offset = 0
+    for i in range(n_perfs):
+        if i > 0:
+            for gy, gsize in gap_after.items():
+                if years[i - 1] <= gy < years[i]:
+                    offset += gsize
+        adjusted[i] = i + 1 + offset
+
     tile_cx = np.empty(n_perfs)
     tile_cy = np.empty(n_perfs)
     for i in range(n_perfs):
-        r = spacing * np.sqrt(i + 1)
-        theta = (i + 1) * golden_angle
+        r = spacing * np.sqrt(adjusted[i])
+        theta = adjusted[i] * golden_angle
         tile_cx[i] = r * np.cos(theta)
         tile_cy[i] = r * np.sin(theta)
 
-    # Radii for year rings (monotonically increasing with index)
-    tile_rs = spacing * np.sqrt(np.arange(1, n_perfs + 1))
+    tile_rs = spacing * np.sqrt(adjusted)
 
     # ── Orient each tile toward next chronological performance ──
     orient_angles = np.empty(n_perfs)
@@ -892,8 +923,8 @@ def plot_gosper_flow(conn):
         orient_angles[i] = np.arctan2(dy, dx)
     orient_angles[-1] = np.arctan2(tile_cy[-1], tile_cx[-1])
 
-    # ── Draw ──
-    dur_norm = mcolors.Normalize(vmin=durs.min(), vmax=durs.max())
+    # ── Draw (power-law color scale for better contrast) ──
+    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
     lw_map = {1: 2.5, 2: 1.5, 3: 0.8, 4: 0.45}
 
@@ -901,7 +932,6 @@ def plot_gosper_flow(conn):
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
-    # Track extents for axis limits
     x_lo, x_hi = np.inf, -np.inf
     y_lo, y_hi = np.inf, -np.inf
 
@@ -943,26 +973,31 @@ def plot_gosper_flow(conn):
                         color=color, linewidth=0.5, alpha=0.4,
                         solid_capstyle="round", zorder=zorder - 0.1)
 
-    # ── Year rings ──
-    unique_years = sorted(set(years))
-    ring_years = unique_years[::3]
-    if unique_years[-1] not in ring_years:
-        ring_years.append(unique_years[-1])
-
-    for yr in ring_years:
-        yr_mask = years >= yr
-        if not yr_mask.any():
+    # ── Era break rings and labels ──
+    for gy, gsize in gap_after.items():
+        # Find last performance at or before gap year, first after
+        before = np.where(years <= gy)[0]
+        after = np.where(years > gy)[0]
+        if len(before) == 0 or len(after) == 0:
             continue
-        pi = np.where(yr_mask)[0][0]
-        ring_r = tile_rs[pi]
+        inner_r = tile_rs[before[-1]]
+        outer_r = tile_rs[after[0]]
+        mid_r = (inner_r + outer_r) / 2
 
-        circle = plt.Circle((0, 0), ring_r, fill=False,
-                             edgecolor="#333344", linewidth=0.5,
-                             linestyle="--", zorder=0)
-        ax.add_patch(circle)
-        ax.text(0, ring_r + 0.4, str(yr), color="#777788",
-                fontsize=8, ha="center", va="bottom", fontweight="bold",
-                zorder=5)
+        for ring_r in (inner_r, outer_r):
+            circle = plt.Circle((0, 0), ring_r, fill=False,
+                                 edgecolor="#667788", linewidth=1.0,
+                                 linestyle="-", alpha=0.6, zorder=3)
+            ax.add_patch(circle)
+
+        # Era label at 12 o'clock in the gap
+        if gy == 1974:
+            label = "1975 hiatus"
+        else:
+            label = str(gy + 1)
+        ax.text(0, mid_r, label, color="#99aabb", fontsize=11,
+                ha="center", va="center", fontweight="bold", zorder=5,
+                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=2))
 
     pad = max_tile * 0.5
     ax.set_xlim(x_lo - pad, x_hi + pad)
@@ -970,19 +1005,18 @@ def plot_gosper_flow(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ── Legend area at top ──
+    # ── Legend area at top (larger fonts) ──
     ax.set_title("Playing in the Band — Gosper Spiral\n"
                  "center → outward chronologically  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
-                 fontsize=11, pad=14, color="white")
+                 fontsize=14, pad=14, color="white")
 
-    # Horizontal colorbar above the plot
-    cax = fig.add_axes([0.25, 0.93, 0.50, 0.012])
+    cax = fig.add_axes([0.20, 0.93, 0.60, 0.015])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
-    cb.set_label("Duration (minutes)", color="white", fontsize=9, labelpad=4)
-    cb.ax.xaxis.set_tick_params(color="white", labelsize=8)
+    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
+    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
     cb.ax.xaxis.set_label_position("top")
     plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
 

@@ -18,6 +18,7 @@ from gdtimings.config import (
     ARCHIVE_API_URL,
     ARCHIVE_METADATA_URL,
     ARCHIVE_RATE_LIMIT,
+    ARCHIVE_SCRAPE_URL,
     ARCHIVE_USER_AGENT,
     QUALITY_RANKS,
 )
@@ -55,35 +56,41 @@ def _api_get(session, url, params=None, max_retries=3):
 # ── Collection search ────────────────────────────────────────────────
 
 def search_collection(session):
-    """Enumerate all GratefulDead collection identifiers via advancedsearch."""
+    """Enumerate all GratefulDead collection identifiers via scrape API.
+
+    Uses the cursor-based scrape endpoint which supports >10k results
+    (the advancedsearch API caps at 10,000).
+    """
     identifiers = []
-    page = 1
-    rows = 10000
+    cursor = None
+    batch = 0
 
     while True:
-        data = _api_get(session, ARCHIVE_API_URL, params={
+        params = {
             "q": "collection:GratefulDead AND mediatype:etree",
-            "fl[]": "identifier",
-            "sort[]": "identifier asc",
-            "rows": str(rows),
-            "page": str(page),
-            "output": "json",
-        })
+            "fields": "identifier",
+            "count": "10000",
+        }
+        if cursor:
+            params["cursor"] = cursor
 
-        docs = data.get("response", {}).get("docs", [])
-        if not docs:
+        data = _api_get(session, ARCHIVE_SCRAPE_URL, params=params)
+
+        items = data.get("items", [])
+        if not items:
             break
 
-        for doc in docs:
-            identifiers.append(doc["identifier"])
+        for item in items:
+            identifiers.append(item["identifier"])
 
-        num_found = data.get("response", {}).get("numFound", 0)
-        print(f"  Search page {page}: {len(docs)} items "
-              f"({len(identifiers)}/{num_found} total)")
+        batch += 1
+        total = data.get("total", "?")
+        print(f"  Search batch {batch}: {len(items)} items "
+              f"({len(identifiers)}/{total} total)")
 
-        if len(identifiers) >= num_found:
+        cursor = data.get("cursor")
+        if not cursor:
             break
-        page += 1
 
     return identifiers
 

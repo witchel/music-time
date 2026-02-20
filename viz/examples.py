@@ -12,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.collections import LineCollection
 import numpy as np
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -608,6 +609,34 @@ def _hilbert_points(order):
     return [_d2xy(n, d) for d in range(n * n)]
 
 
+def _gosper_points(order):
+    """Generate (x, y) points for a Gosper curve (flowsnake) via L-system.
+
+    Rules: A → A-B--B+A++AA+B-,  B → +A-BB--B-A++A+B
+    Turn angle: 60°.  Each order multiplies segment count by 7.
+    """
+    axiom = "A"
+    rules = {"A": "A-B--B+A++AA+B-", "B": "+A-BB--B-A++A+B"}
+    s = axiom
+    for _ in range(order):
+        s = "".join(rules.get(c, c) for c in s)
+
+    x, y = 0.0, 0.0
+    direction = 0.0
+    points = [(x, y)]
+    for c in s:
+        if c in ("A", "B"):
+            rad = np.radians(direction)
+            x += np.cos(rad)
+            y += np.sin(rad)
+            points.append((x, y))
+        elif c == "+":
+            direction += 60
+        elif c == "-":
+            direction -= 60
+    return np.array(points)
+
+
 def plot_hilbert(conn):
     rows = conn.execute("""
         SELECT r.concert_date, r.concert_year,
@@ -747,15 +776,16 @@ def plot_hilbert(conn):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 10. Hilbert Flow — continuous spiral, Hilbert wiggles, color = duration
+# 10. Gosper Spiral — continuous flowsnake, tile area ∝ duration
 # ══════════════════════════════════════════════════════════════════════════
-def plot_hilbert_flow(conn):
-    """One continuous Archimedean spiral from center outward.
-    - Arc length per performance ∝ duration (long jams claim more space).
-    - Perpendicular displacement uses Hilbert curve y-coordinates for
-      blocky, space-filling wiggles whose amplitude ∝ duration.
-    - Color = duration (cool → red).
-    - Year rings with labels at 12 o'clock."""
+def plot_gosper_flow(conn):
+    """Gosper curve tiles on an Archimedean spiral — one continuous line.
+
+    Like plot #9 but with Gosper (flowsnake) curves instead of Hilbert,
+    tile size scales with duration (area ∝ duration), no bounding boxes,
+    and the curve is continuous — each tile's end connects to the next
+    tile's start along the spiral backbone.
+    """
 
     rows = conn.execute("""
         SELECT r.concert_date, r.concert_year,
@@ -771,149 +801,154 @@ def plot_hilbert_flow(conn):
     """).fetchall()
 
     durs = np.array([r["dur_min"] for r in rows])
-    years_arr = np.array([r["concert_year"] for r in rows])
+    years = np.array([r["concert_year"] for r in rows])
     n_perfs = len(rows)
     max_dur = durs.max()
 
-    # ── Pre-compute Hilbert y-coordinate signals at several orders ──
-    # The y-coordinate of a Hilbert curve walk creates a blocky, self-similar
-    # zigzag — much more space-filling than sinusoidal wiggles.
-    hilbert_signals = {}
-    for order in [2, 3, 4, 5]:
-        pts = _hilbert_points(order)
-        ys = np.array([p[1] for p in pts], dtype=float)
-        # Normalize to [-1, +1]
-        ys = 2 * (ys - ys.min()) / (ys.max() - ys.min()) - 1
-        hilbert_signals[order] = ys
+    # ── Pre-compute Gosper curves at orders 1-4 ──
+    gosper_norm = {}    # centered & unit-scaled points
+    gosper_angle = {}   # angle of start→end vector (for alignment)
+    for order in range(1, 5):
+        raw = _gosper_points(order)
+        delta = raw[-1] - raw[0]
+        gosper_angle[order] = np.arctan2(delta[1], delta[0])
+        # Center at midpoint of start→end so start/end straddle the center
+        mid = (raw[0] + raw[-1]) / 2
+        centered = raw - mid
+        extent = max(centered[:, 0].max() - centered[:, 0].min(),
+                     centered[:, 1].max() - centered[:, 1].min())
+        if extent > 0:
+            centered /= extent
+        gosper_norm[order] = centered
+
+    # ── Choose order & tile size per performance ──
+    orders = np.empty(n_perfs, dtype=int)
+    for i, d in enumerate(durs):
+        if d < 5:
+            orders[i] = 1
+        elif d < 10:
+            orders[i] = 2
+        elif d < 20:
+            orders[i] = 3
+        else:
+            orders[i] = 4
+
+    # Tile size: area ∝ duration → linear size ∝ sqrt(duration)
+    min_tile = 0.25
+    max_tile = 1.1
+    tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
 
     # ── Archimedean spiral ──
-    n_points = 80000
-    n_revolutions = 18
+    growth = 0.25
+    r0 = 1.5
+    n_revolutions = 10
     max_theta = 2 * np.pi * n_revolutions
-    thetas = np.linspace(0, max_theta, n_points)
-    growth = 0.10
-    r0 = 0.3
-    rs = r0 + growth * thetas
-    base_x = rs * np.cos(thetas)
-    base_y = rs * np.sin(thetas)
 
-    # Tangent and normal vectors
-    dx = np.gradient(base_x)
-    dy = np.gradient(base_y)
-    mag = np.sqrt(dx**2 + dy**2)
-    mag[mag == 0] = 1
-    nx = -dy / mag  # normal (perpendicular)
-    ny = dx / mag
-
-    # ── Arc length → duration-proportional allocation ──
-    ds = np.sqrt(np.diff(base_x)**2 + np.diff(base_y)**2)
+    n_fine = 30000
+    thetas_fine = np.linspace(0, max_theta, n_fine)
+    r_fine = r0 + growth * thetas_fine
+    x_fine = r_fine * np.cos(thetas_fine)
+    y_fine = r_fine * np.sin(thetas_fine)
+    ds = np.sqrt(np.diff(x_fine)**2 + np.diff(y_fine)**2)
     arc = np.concatenate([[0], np.cumsum(ds)])
     total_arc = arc[-1]
 
-    # Each performance gets arc length proportional to its duration
-    cum_dur = np.cumsum(durs)
-    total_dur = cum_dur[-1]
-    boundaries = np.zeros(n_perfs + 1)
-    boundaries[1:] = (cum_dur / total_dur) * total_arc
+    # Tangent angles along fine spiral
+    dx_fine = np.gradient(x_fine)
+    dy_fine = np.gradient(y_fine)
+    tang_fine = np.arctan2(dy_fine, dx_fine)
 
-    perf_idx = np.searchsorted(boundaries[1:], arc)
-    perf_idx = np.clip(perf_idx, 0, n_perfs - 1)
+    # ── Arc-length spacing proportional to tile size ──
+    cum_space = np.cumsum(tile_sizes)
+    margin = tile_sizes[0]
+    usable = total_arc - 2 * margin
+    target_arcs = margin + ((cum_space - cum_space[0])
+                            / (cum_space[-1] - cum_space[0]) * usable)
 
-    # ── Apply Hilbert-curve perpendicular displacement ──
-    max_amp = growth * np.pi * 1.1
+    tile_thetas = np.interp(target_arcs, arc, thetas_fine)
+    tile_rs = r0 + growth * tile_thetas
+    tile_cx = tile_rs * np.cos(tile_thetas)
+    tile_cy = tile_rs * np.sin(tile_thetas)
+    tile_tangents = np.interp(target_arcs, arc, tang_fine)
 
-    perturbed_x = base_x.copy()
-    perturbed_y = base_y.copy()
-
-    for pi in range(n_perfs):
-        mask = perf_idx == pi
-        if not np.any(mask):
-            continue
-
-        frac = durs[pi] / max_dur
-        amp = (frac ** 2.0) * max_amp  # sharper power curve
-
-        # Pick Hilbert order based on duration
-        # Lower orders have fewer, larger steps → more visible at each scale
-        if frac < 0.2:
-            order = 2   # 16 steps — gentle
-        elif frac < 0.45:
-            order = 3   # 64 steps — moderate
-        elif frac < 0.65:
-            order = 4   # 256 steps — complex
-        else:
-            order = 5   # 1024 steps — dense
-
-        indices = np.where(mask)[0]
-        h_sig = hilbert_signals[order]
-        # Nearest-neighbor resample: preserves the blocky Hilbert steps
-        s_t = np.linspace(0, len(h_sig) - 1, len(indices))
-        signal = amp * h_sig[np.round(s_t).astype(int)]
-
-        perturbed_x[indices] += signal * nx[indices]
-        perturbed_y[indices] += signal * ny[indices]
-
-    # ── Draw ──
-    from matplotlib.collections import LineCollection
-
-    # Color = duration (cool blue → red)
+    # ── Build one continuous path as line segments ──
     dur_norm = mcolors.Normalize(vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
-    point_colors = cmap(dur_norm(durs[perf_idx]))
 
-    points = np.column_stack([perturbed_x, perturbed_y]).reshape(-1, 1, 2)
-    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    all_segments = []
+    all_dur_values = []
+    all_linewidths = []
+    lw_map = {1: 2.0, 2: 1.2, 3: 0.7, 4: 0.4}
 
-    # Line width: thicker for long performances
-    lw_arr = 0.2 + 1.5 * (durs[perf_idx[:-1]] / max_dur)
+    prev_end = None
+    for idx in range(n_perfs):
+        order = orders[idx]
+        pts = gosper_norm[order].copy()
+        size = tile_sizes[idx]
+        tang = tile_tangents[idx]
 
-    lc = LineCollection(segments, colors=point_colors[:-1], linewidths=lw_arr,
-                        capstyle="round", joinstyle="round")
+        # Rotate so the curve's start→end aligns with the spiral tangent
+        rot = tang - gosper_angle[order]
+        ca, sa = np.cos(rot), np.sin(rot)
+        scaled = pts * size
+        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
+        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
+
+        # Connecting segment from previous tile's end
+        if prev_end is not None:
+            all_segments.append([prev_end, [rx[0], ry[0]]])
+            all_dur_values.append((durs[max(0, idx - 1)] + durs[idx]) / 2)
+            all_linewidths.append(0.4)
+
+        # Gosper curve segments for this performance
+        for j in range(len(rx) - 1):
+            all_segments.append([[rx[j], ry[j]], [rx[j + 1], ry[j + 1]]])
+            all_dur_values.append(durs[idx])
+            all_linewidths.append(lw_map[order])
+
+        prev_end = [rx[-1], ry[-1]]
+
+    segments = np.array(all_segments)
+    lc = LineCollection(segments, cmap=cmap, norm=dur_norm,
+                        linewidths=all_linewidths, alpha=0.9)
+    lc.set_array(np.array(all_dur_values))
 
     fig, ax = plt.subplots(figsize=(14, 14))
-    fig.set_facecolor("#0d0d1a")
-    ax.set_facecolor("#0d0d1a")
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
     ax.add_collection(lc)
 
     # ── Year rings at 12 o'clock ──
-    # For each year boundary, find the spiral radius where that year starts
-    # and draw a faint ring + label.
-    unique_years = sorted(set(years_arr))
-    ring_years = unique_years[::3]  # every 3 years
+    unique_years = sorted(set(years))
+    ring_years = unique_years[::3]
     if unique_years[-1] not in ring_years:
         ring_years.append(unique_years[-1])
 
     for yr in ring_years:
-        # First performance of this year (or later)
-        yr_mask = years_arr >= yr
+        yr_mask = years >= yr
         if not yr_mask.any():
             continue
         pi = np.where(yr_mask)[0][0]
-        # Find the midpoint of this performance on the spiral
-        pt_mask = perf_idx == pi
-        if not pt_mask.any():
-            continue
-        pt_indices = np.where(pt_mask)[0]
-        mid = pt_indices[0]
-        ring_r = rs[mid]
+        ring_r = tile_rs[pi]
 
-        # Draw a faint circle
         circle = plt.Circle((0, 0), ring_r, fill=False,
                              edgecolor="#333344", linewidth=0.5,
                              linestyle="--", zorder=0)
         ax.add_patch(circle)
-        # Label at 12 o'clock (top)
-        ax.text(0, ring_r + 0.15, str(yr), color="#777788", fontsize=8,
-                ha="center", va="bottom", fontweight="bold", zorder=5)
+        ax.text(0, ring_r + max_tile * 0.4, str(yr), color="#777788",
+                fontsize=8, ha="center", va="bottom", fontweight="bold",
+                zorder=5)
 
-    pad = max_amp * 3
-    ax.set_xlim(perturbed_x.min() - pad, perturbed_x.max() + pad)
-    ax.set_ylim(perturbed_y.min() - pad, perturbed_y.max() + pad)
+    all_x = segments[:, :, 0].ravel()
+    all_y = segments[:, :, 1].ravel()
+    pad = max_tile * 2
+    ax.set_xlim(all_x.min() - pad, all_x.max() + pad)
+    ax.set_ylim(all_y.min() - pad, all_y.max() + pad)
     ax.set_aspect("equal")
     ax.axis("off")
-    ax.set_title("Playing in the Band — Hilbert Flow\n"
-                 "spiral from center (1971)  ·  arc length & wiggle ∝ duration"
-                 "  ·  color = duration",
+    ax.set_title("Playing in the Band — Gosper Spiral\n"
+                 "center → outward chronologically  ·  "
+                 "tile area & complexity ∝ duration  ·  color = duration",
                  fontsize=11, pad=12, color="white")
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
@@ -924,10 +959,10 @@ def plot_hilbert_flow(conn):
     plt.setp(cb.ax.yaxis.get_ticklabels(), color="white")
 
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "10_hilbert_flow_playing_in_band.png", dpi=200,
+    fig.savefig(OUTPUT_DIR / "10_gosper_flow_playing_in_band.png", dpi=200,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
-    print("  10_hilbert_flow_playing_in_band.png")
+    print("  10_gosper_flow_playing_in_band.png")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -946,9 +981,9 @@ def main():
     plot_duration_variability(conn)
     plot_envelope(conn)
     plot_hilbert(conn)
-    plot_hilbert_flow(conn)
+    plot_gosper_flow(conn)
     conn.close()
-    print(f"Done — 9 plots saved to {OUTPUT_DIR}/")
+    print(f"Done — 10 plots saved to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":

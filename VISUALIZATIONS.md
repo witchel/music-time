@@ -2,11 +2,13 @@
 
 Design goal: use **two spatial dimensions plus color** to represent how song
 performances evolve over time. Visualizations should be band-agnostic, working
-from generic columns (song name, date, duration, venue/city/state, set
-position, etc.) like the CSV export already provides.
+from a SQLite database with a common schema (songs, releases, tracks tables
+with columns like song name, date, duration, venue/city/state, set position,
+etc.).
 
 Code will live in a top-level `viz/` module, separate from band-specific
-scraping packages like `gdtimings/`.
+scraping packages like `gdtimings/`. The `viz/` module reads directly from the
+SQLite database rather than CSV exports.
 
 ---
 

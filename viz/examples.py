@@ -97,14 +97,20 @@ def get_conn():
 # ══════════════════════════════════════════════════════════════════════════
 def plot_terrain(conn):
     rows = conn.execute("""
-        SELECT r.concert_date, t.duration_seconds / 60.0 AS dur_min, r.state
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE s.canonical_name = 'Dark Star'
-          AND t.duration_seconds IS NOT NULL
-          AND r.concert_date IS NOT NULL
-        ORDER BY r.concert_date
+        SELECT sub.concert_date, AVG(sub.max_dur) / 60.0 AS dur_min, sub.state
+        FROM (
+            SELECT r.concert_date, r.state, r.id,
+                   MAX(t.duration_seconds) AS max_dur
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE s.canonical_name = 'Dark Star'
+              AND t.duration_seconds IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY r.concert_date, r.id
+        ) sub
+        GROUP BY sub.concert_date
+        ORDER BY sub.concert_date
     """).fetchall()
 
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -200,15 +206,21 @@ def plot_heatmap(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_polar(conn):
     rows = conn.execute("""
-        SELECT r.concert_date, t.duration_seconds / 60.0 AS dur_min,
-               COALESCE(LOWER(t.set_name), 'unknown') AS sn
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE s.canonical_name = 'Dark Star'
-          AND t.duration_seconds IS NOT NULL
-          AND r.concert_date IS NOT NULL
-        ORDER BY r.concert_date
+        SELECT sub.concert_date, AVG(sub.max_dur) / 60.0 AS dur_min, sub.sn
+        FROM (
+            SELECT r.concert_date, r.id,
+                   COALESCE(LOWER(t.set_name), 'unknown') AS sn,
+                   MAX(t.duration_seconds) AS max_dur
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE s.canonical_name = 'Dark Star'
+              AND t.duration_seconds IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY r.concert_date, r.id
+        ) sub
+        GROUP BY sub.concert_date
+        ORDER BY sub.concert_date
     """).fetchall()
 
     # Map date to angle: full career 1965-1995 → 0 to 2π
@@ -326,15 +338,20 @@ def plot_streamgraph(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_geographic(conn):
     rows = conn.execute("""
-        SELECT r.state, AVG(t.duration_seconds) / 60.0 AS avg_min,
+        SELECT sub.state, AVG(sub.max_dur) / 60.0 AS avg_min,
                COUNT(*) AS n
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE s.canonical_name = 'Dark Star'
-          AND t.duration_seconds IS NOT NULL
-          AND r.state IS NOT NULL
-        GROUP BY r.state
+        FROM (
+            SELECT r.state, r.concert_date, r.id,
+                   MAX(t.duration_seconds) AS max_dur
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE s.canonical_name = 'Dark Star'
+              AND t.duration_seconds IS NOT NULL
+              AND r.state IS NOT NULL
+            GROUP BY r.concert_date, r.id
+        ) sub
+        GROUP BY sub.state
     """).fetchall()
 
     state_data = {}
@@ -511,14 +528,20 @@ def plot_duration_variability(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_envelope(conn):
     rows = conn.execute("""
-        SELECT r.concert_date, t.duration_seconds / 60.0 AS dur_min
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE s.canonical_name = 'Playing in the Band'
-          AND t.duration_seconds IS NOT NULL
-          AND r.concert_date IS NOT NULL
-        ORDER BY r.concert_date
+        SELECT sub.concert_date, AVG(sub.max_dur) / 60.0 AS dur_min
+        FROM (
+            SELECT r.concert_date, r.id,
+                   MAX(t.duration_seconds) AS max_dur
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE s.canonical_name = 'Playing in the Band'
+              AND t.duration_seconds IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY r.concert_date, r.id
+        ) sub
+        GROUP BY sub.concert_date
+        ORDER BY sub.concert_date
     """).fetchall()
 
     dates = [r["concert_date"] for r in rows]
@@ -639,16 +662,21 @@ def _gosper_points(order):
 
 def plot_hilbert(conn):
     rows = conn.execute("""
-        SELECT r.concert_date, r.concert_year,
-               AVG(t.duration_seconds) / 60.0 AS dur_min
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE s.canonical_name = 'Playing in the Band'
-          AND t.duration_seconds IS NOT NULL
-          AND r.concert_date IS NOT NULL
-        GROUP BY r.concert_date
-        ORDER BY r.concert_date
+        SELECT sub.concert_date, sub.concert_year,
+               AVG(sub.max_dur) / 60.0 AS dur_min
+        FROM (
+            SELECT r.concert_date, r.concert_year, r.id,
+                   MAX(t.duration_seconds) AS max_dur
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE s.canonical_name = 'Playing in the Band'
+              AND t.duration_seconds IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY r.concert_date, r.id
+        ) sub
+        GROUP BY sub.concert_date
+        ORDER BY sub.concert_date
     """).fetchall()
 
     durs = np.array([r["dur_min"] for r in rows])
@@ -788,16 +816,21 @@ def plot_gosper_flow(conn):
     """
 
     rows = conn.execute("""
-        SELECT r.concert_date, r.concert_year,
-               AVG(t.duration_seconds) / 60.0 AS dur_min
-        FROM tracks t
-        JOIN songs s ON t.song_id = s.id
-        JOIN releases r ON t.release_id = r.id
-        WHERE s.canonical_name = 'Playing in the Band'
-          AND t.duration_seconds IS NOT NULL
-          AND r.concert_date IS NOT NULL
-        GROUP BY r.concert_date
-        ORDER BY r.concert_date
+        SELECT sub.concert_date, sub.concert_year,
+               AVG(sub.max_dur) / 60.0 AS dur_min
+        FROM (
+            SELECT r.concert_date, r.concert_year, r.id,
+                   MAX(t.duration_seconds) AS max_dur
+            FROM tracks t
+            JOIN songs s ON t.song_id = s.id
+            JOIN releases r ON t.release_id = r.id
+            WHERE s.canonical_name = 'Playing in the Band'
+              AND t.duration_seconds IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY r.concert_date, r.id
+        ) sub
+        GROUP BY sub.concert_date
+        ORDER BY sub.concert_date
     """).fetchall()
 
     durs = np.array([r["dur_min"] for r in rows])

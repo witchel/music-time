@@ -22,6 +22,7 @@ from gdtimings.config import (
     QUALITY_RANKS,
 )
 from gdtimings import db
+from gdtimings.location import parse_city_state
 from gdtimings.normalize import normalize_song
 
 
@@ -264,13 +265,14 @@ def scrape_item(conn, session, identifier):
     rec_type = parse_recording_type(identifier, metadata)
     quality_rank = QUALITY_RANKS.get(rec_type, 100)
 
-    # Build venue string from venue + coverage (city/state in IA metadata)
-    venue = metadata.get("venue", "")
-    ia_coverage = metadata.get("coverage", "")  # "city, state" in IA terms
-    if venue and ia_coverage:
-        venue = f"{venue}, {ia_coverage}"
-    elif ia_coverage:
-        venue = ia_coverage
+    # Structured venue/location fields
+    venue = metadata.get("venue", "") or None
+    city, state = parse_city_state(metadata.get("coverage", ""))
+
+    # Capture recording provenance fields
+    taper = metadata.get("taper", "") or None
+    lineage = metadata.get("lineage", "") or None
+    source_detail = metadata.get("source", "") or None
 
     title = metadata.get("title", identifier)
 
@@ -282,10 +284,15 @@ def scrape_item(conn, session, identifier):
         title=title,
         concert_date=concert_date,
         venue=venue,
+        city=city,
+        state=state,
         coverage="unedited",  # archive.org recordings are unedited live tapes
         recording_type=rec_type,
         quality_rank=quality_rank,
         source_url=f"https://archive.org/details/{identifier}",
+        taper=taper,
+        lineage=lineage,
+        source_detail=source_detail,
     )
 
     # Insert tracks

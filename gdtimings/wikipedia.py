@@ -24,15 +24,22 @@ from gdtimings.config import (
     WIKIPEDIA_USER_AGENT,
 )
 from gdtimings import db
+from gdtimings.location import is_us_state, normalize_state
 from gdtimings.normalize import normalize_song
 
 
 class _TagStripper(HTMLParser):
     """Strip HTML tags, keeping only text content."""
 
+    _BLOCK_TAGS = frozenset(("br", "p", "div", "li", "tr"))
+
     def __init__(self):
         super().__init__()
         self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self._BLOCK_TAGS:
+            self.parts.append("\n")
 
     def handle_data(self, data):
         self.parts.append(data)
@@ -415,6 +422,93 @@ def parse_tracks(html_text):
     return tracks
 
 
+# ── Venue / location parsing ─────────────────────────────────────────
+
+def parse_venue_location(venue_text):
+    """Parse Wikipedia venue field into (venue_name, city, state).
+
+    The venue field (after strip_tags fix) may contain:
+        "Boston Garden\nBoston, Massachusetts"        → <br> separated
+        "Barton Hall (Ithaca, New York)"              → parenthesized location
+        "Avalon Ballroom in San Francisco, California" → "in" pattern
+        "Madison Square Garden"                        → venue only, no location
+
+    Returns (venue, city, state) — any may be None.
+    """
+    if not venue_text:
+        return None, None, None
+
+    venue_text = venue_text.strip()
+
+    # Multi-venue with semicolons: take only the first venue
+    if ";" in venue_text:
+        venue_text = venue_text.split(";")[0].strip()
+
+    # Pattern 1: newline-separated (from <br> fix)
+    if "\n" in venue_text:
+        lines = [ln.strip() for ln in venue_text.split("\n") if ln.strip()]
+        venue_name = lines[0].rstrip(",").strip() if lines else None
+        city, state = None, None
+        # Look for a "City, State" line — skip lines that look like another venue
+        for ln in lines[1:]:
+            # Strip surrounding parentheses: "(Pembroke Pines, Florida)" → "Pembroke Pines, Florida"
+            ln = re.sub(r'^\((.+)\)$', r'\1', ln).strip()
+            if "," in ln:
+                parts = ln.split(",", 1)
+                candidate_state = parts[1].strip()
+                # Only accept if the state part is a recognized US state
+                # (avoids "Community War Memorial, Rochester, New York" being parsed
+                # as city="Community War Memorial", state="Rochester, New York")
+                if is_us_state(candidate_state):
+                    city = parts[0].strip() or None
+                    state = normalize_state(candidate_state)
+                    break
+            elif not city:
+                # Single word/phrase without comma — could be a city name (e.g. "Lake Tahoe")
+                # Skip lines that look like another venue name
+                venue_words = ("theatre", "theater", "arena", "hall", "coliseum",
+                               "auditorium", "stadium", "center", "centre", "field",
+                               "ballroom", "garden", "pavilion", "amphitheatre")
+                if not any(w in ln.lower() for w in venue_words):
+                    city = ln
+        return venue_name, city, state
+
+    # Pattern 2: parenthesized location — "Barton Hall (Ithaca, New York)"
+    m = re.match(r'^(.+?)\s*\(([^)]+)\)\s*$', venue_text)
+    if m:
+        venue_name = m.group(1).strip()
+        loc = m.group(2).strip()
+        if "," in loc:
+            parts = loc.split(",", 1)
+            return venue_name, parts[0].strip(), normalize_state(parts[1].strip())
+        return venue_name, loc, None
+
+    # Pattern 3: "in" separator — "Avalon Ballroom in San Francisco, California"
+    m = re.match(r'^(.+?)\s+in\s+(.+)$', venue_text, re.IGNORECASE)
+    if m:
+        venue_name = m.group(1).strip()
+        loc = m.group(2).strip()
+        if "," in loc:
+            parts = loc.split(",", 1)
+            return venue_name, parts[0].strip(), normalize_state(parts[1].strip())
+        return venue_name, loc, None
+
+    # Pattern 4: comma-separated with embedded state
+    # "Selland Arena, Fresno, California, USA" → venue=Selland Arena, city=Fresno, state=California
+    # "Capitol Theatre, Passaic, NJ" → venue=Capitol Theatre, city=Passaic, state=New Jersey
+    if "," in venue_text:
+        parts = [p.strip() for p in venue_text.split(",")]
+        for i, part in enumerate(parts):
+            if is_us_state(part):
+                venue_name = ", ".join(parts[:i - 1]) if i > 1 else None
+                city = parts[i - 1] if i > 0 else None
+                state = normalize_state(part)
+                return venue_name, city, state
+
+    # Fallback: venue name only
+    return venue_text, None, None
+
+
 # ── Main scraping logic ──────────────────────────────────────────────
 
 def scrape_album(conn, session, page_title, category=None, source_url=None):
@@ -443,6 +537,9 @@ def scrape_album(conn, session, page_title, category=None, source_url=None):
         page_title, CATEGORY_COVERAGE.get(category, "unknown")
     )
 
+    # Parse venue into structured fields
+    venue_name, city, state = parse_venue_location(info.get("venue"))
+
     if not source_url:
         safe_title = page_title.replace(" ", "_")
         source_url = f"https://en.wikipedia.org/wiki/{safe_title}"
@@ -454,7 +551,9 @@ def scrape_album(conn, session, page_title, category=None, source_url=None):
         source_id=page_title,
         title=page_title,
         concert_date=concert_date,
-        venue=info.get("venue"),
+        venue=venue_name,
+        city=city,
+        state=state,
         coverage=coverage,
         recording_type="official",
         quality_rank=500,

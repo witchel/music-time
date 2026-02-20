@@ -30,17 +30,27 @@ CREATE TABLE IF NOT EXISTS releases (
     source_id       TEXT NOT NULL UNIQUE,
     title           TEXT,
     concert_date    TEXT,
+    concert_year    INTEGER,
+    concert_month   INTEGER,
+    concert_day     INTEGER,
     venue           TEXT,
+    city            TEXT,
+    state           TEXT,
     coverage        TEXT,
     recording_type  TEXT,
     quality_rank    INTEGER DEFAULT 0,
     release_date    TEXT,
     label           TEXT,
     source_url      TEXT,
+    taper           TEXT,
+    lineage         TEXT,
+    source_detail   TEXT,
     scraped_at      TEXT NOT NULL,
     scrape_status   TEXT DEFAULT 'complete'
 );
 CREATE INDEX IF NOT EXISTS idx_releases_date ON releases(concert_date);
+CREATE INDEX IF NOT EXISTS idx_releases_year ON releases(concert_year);
+CREATE INDEX IF NOT EXISTS idx_releases_state ON releases(state);
 
 CREATE TABLE IF NOT EXISTS tracks (
     id              INTEGER PRIMARY KEY,
@@ -102,17 +112,35 @@ def release_exists(conn, source_id):
     return row["id"] if row else None
 
 
+def _parse_date_parts(concert_date):
+    """Extract (year, month, day) integers from an ISO date string."""
+    if not concert_date:
+        return None, None, None
+    import re
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})', concert_date)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return None, None, None
+
+
 def insert_release(conn, *, source_type, source_id, title=None, concert_date=None,
-                   venue=None, coverage=None, recording_type="official",
-                   quality_rank=500, release_date=None, label=None, source_url=None):
+                   venue=None, city=None, state=None, coverage=None,
+                   recording_type="official", quality_rank=500, release_date=None,
+                   label=None, source_url=None, taper=None, lineage=None,
+                   source_detail=None):
     now = datetime.now(timezone.utc).isoformat()
+    concert_year, concert_month, concert_day = _parse_date_parts(concert_date)
     cur = conn.execute(
         """INSERT INTO releases
-           (source_type, source_id, title, concert_date, venue, coverage,
-            recording_type, quality_rank, release_date, label, source_url, scraped_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (source_type, source_id, title, concert_date, venue, coverage,
-         recording_type, quality_rank, release_date, label, source_url, now),
+           (source_type, source_id, title, concert_date, concert_year,
+            concert_month, concert_day, venue, city, state, coverage,
+            recording_type, quality_rank, release_date, label, source_url,
+            taper, lineage, source_detail, scraped_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (source_type, source_id, title, concert_date, concert_year,
+         concert_month, concert_day, venue, city, state, coverage,
+         recording_type, quality_rank, release_date, label, source_url,
+         taper, lineage, source_detail, now),
     )
     return cur.lastrowid
 
@@ -227,8 +255,9 @@ def export_tracks(conn):
     return conn.execute(
         """SELECT s.canonical_name AS song, t.duration_seconds, t.disc_number,
                   t.track_number, t.set_name, t.writers, t.segue, t.is_outlier,
-                  r.title AS release_title, r.concert_date, r.venue, r.coverage,
-                  r.source_type
+                  r.title AS release_title, r.concert_date, r.concert_year,
+                  r.concert_month, r.concert_day, r.venue, r.city, r.state,
+                  r.coverage, r.source_type, r.taper, r.lineage, r.source_detail
            FROM tracks t
            JOIN releases r ON t.release_id = r.id
            LEFT JOIN songs s ON t.song_id = s.id

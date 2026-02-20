@@ -234,6 +234,13 @@ def clean_title(raw):
     s = s.split("\n")[0].strip()
     # Remove leading track numbers like "1.", "01.", "1)"
     s = re.sub(r"^\d+[\.\)]\s*", "", s)
+    # Strip archive.org-style prefixes:
+    #   "d1t01 - Title", "d2t05. Title" (disc/track notation)
+    #   "gd77-05-08d1t01 - Title" (identifier prefix)
+    s = re.sub(r'^gd\d{2,4}-?\d{2}-?\d{2}d\d+t\d+\s*[-–—.]\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'^d\d+t\d+\s*[-–—.]\s*', '', s, flags=re.IGNORECASE)
+    # "01 - Title" or "02 – Title" (number + spaced dash, distinct from "01." above)
+    s = re.sub(r'^\d+\s+[-–—]\s+', '', s)
     # Normalize quotes: convert all fancy quotes to straight
     s = s.replace("\u2018", "'").replace("\u2019", "'")
     s = s.replace("\u201c", '"').replace("\u201d", '"')

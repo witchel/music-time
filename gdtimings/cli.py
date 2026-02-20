@@ -6,16 +6,25 @@ import sys
 
 from gdtimings import db
 from gdtimings.analyze import compute_song_stats, print_song_summary
-from gdtimings.wikipedia import scrape_all
 
 
 def cmd_scrape(args):
-    """Scrape Wikipedia for Grateful Dead live release track listings."""
+    """Scrape release track listings from specified source(s)."""
     conn = db.get_connection()
-    print("Scraping Wikipedia live releases...")
-    releases, tracks = scrape_all(conn, full=args.full)
-    if releases == 0 and tracks == 0:
-        print("  No new data (all categories already scraped). Use --full to re-scrape.")
+    source = args.source
+
+    if source in ("wikipedia", "all"):
+        from gdtimings.wikipedia import scrape_all as scrape_wiki
+        print("Scraping Wikipedia live releases...")
+        releases, tracks = scrape_wiki(conn, full=args.full)
+        if releases == 0 and tracks == 0:
+            print("  No new data (all categories already scraped). Use --full to re-scrape.")
+
+    if source in ("archive", "all"):
+        from gdtimings.archive_org import scrape_all as scrape_archive
+        print("Scraping archive.org GratefulDead collection...")
+        scrape_archive(conn, full=args.full)
+
     conn.close()
 
 
@@ -38,6 +47,25 @@ def cmd_status(args):
     print(f"  Tracks:             {stats['tracks']}")
     print(f"  Tracks w/ duration: {stats['tracks_with_duration']}")
     print(f"  Unmatched tracks:   {stats['unmatched_tracks']}")
+
+    # Breakdown by source
+    sources = conn.execute(
+        "SELECT source_type, COUNT(*) AS n FROM releases GROUP BY source_type"
+    ).fetchall()
+    if len(sources) > 1 or (sources and sources[0]["source_type"] != "wikipedia"):
+        print("  By source:")
+        for row in sources:
+            print(f"    {row['source_type']:15s} {row['n']} releases")
+
+    # Coverage breakdown
+    coverages = conn.execute(
+        "SELECT coverage, COUNT(*) AS n FROM releases GROUP BY coverage ORDER BY n DESC"
+    ).fetchall()
+    if coverages:
+        print("  By coverage:")
+        for row in coverages:
+            print(f"    {row['coverage'] or 'NULL':15s} {row['n']}")
+
     conn.close()
 
 
@@ -103,7 +131,10 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # scrape
-    p_scrape = subparsers.add_parser("scrape", help="Scrape Wikipedia live releases")
+    p_scrape = subparsers.add_parser("scrape", help="Scrape release track listings")
+    p_scrape.add_argument("--source", choices=["wikipedia", "archive", "all"],
+                          default="wikipedia",
+                          help="Data source (default: wikipedia)")
     p_scrape.add_argument("--full", action="store_true",
                           help="Re-scrape everything (ignore prior state)")
     p_scrape.set_defaults(func=cmd_scrape)

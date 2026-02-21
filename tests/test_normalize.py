@@ -82,6 +82,19 @@ class TestCleanTitle:
         assert clean_title("") == ""
         assert clean_title("   ") == ""
 
+    def test_strip_trailing_backslash(self):
+        assert clean_title("Gimme Some Lovin\\") == "Gimme Some Lovin"
+
+    def test_strip_bracketed_metadata(self):
+        assert clean_title("[crowd]") == ""
+
+    def test_strip_segue_sequence(self):
+        assert clean_title("Alligator > Drums > Jam") == "Alligator"
+
+    def test_simple_segue_preserved(self):
+        """Single segue marker (not a sequence) is handled by existing logic."""
+        assert clean_title("Scarlet Begonias") == "Scarlet Begonias"
+
     def test_combined_stripping(self):
         """Multiple cleanup steps at once."""
         assert clean_title('01. "Dark Star" (Garcia) \u2013 14:35 >') == "Dark Star"
@@ -125,6 +138,16 @@ class TestNormalizeSong:
 
     def test_empty_title(self, conn):
         song_id, name, match = normalize_song(conn, "")
+        assert song_id is None
+        assert name is None
+
+    def test_garbage_name_rejected(self, conn):
+        song_id, name, match = normalize_song(conn, "-")
+        assert song_id is None
+        assert name is None
+
+    def test_punctuation_only_rejected(self, conn):
+        song_id, name, match = normalize_song(conn, "?")
         assert song_id is None
         assert name is None
 

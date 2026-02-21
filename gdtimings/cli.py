@@ -23,7 +23,12 @@ def cmd_scrape(args):
     if source in ("archive", "all"):
         from gdtimings.archive_org import scrape_all as scrape_archive
         print("Scraping archive.org GratefulDead collection...")
-        scrape_archive(conn, full=args.full)
+        scrape_archive(
+            conn, full=args.full,
+            workers=args.workers,
+            use_cache=not args.no_cache,
+            max_age_days=args.max_age,
+        )
 
     conn.close()
 
@@ -139,6 +144,12 @@ def main():
                           help="Data source (default: wikipedia)")
     p_scrape.add_argument("--full", action="store_true",
                           help="Re-scrape everything (ignore prior state)")
+    p_scrape.add_argument("--workers", type=int, default=None,
+                          help="Number of parallel fetch workers (default: 8)")
+    p_scrape.add_argument("--no-cache", action="store_true",
+                          help="Disable local JSON cache (sequential fetching)")
+    p_scrape.add_argument("--max-age", type=int, default=0,
+                          help="Max cache age in days (0 = never expire)")
     p_scrape.set_defaults(func=cmd_scrape)
 
     # analyze

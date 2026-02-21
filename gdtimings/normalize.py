@@ -232,6 +232,17 @@ def clean_title(raw):
     s = raw.strip()
     # Take only the first line (discard venue/date info on subsequent lines)
     s = s.split("\n")[0].strip()
+    # Strip trailing backslashes (archive.org escaped newlines)
+    s = s.rstrip('\\')
+
+    # Remove bracketed metadata labels like [crowd], [tuning], [signals]
+    s = re.sub(r'^\[.*\]$', '', s).strip()
+
+    # Strip segue sequences: "Song > Drums > Song" → "Song"
+    # Take only the first song name before multi-step segue chains
+    if re.search(r'\s*[>→]\s*.+[>→]\s*', s):
+        s = re.split(r'\s*[>→]\s*', s)[0].strip()
+
     # Remove leading track numbers like "1.", "01.", "1)"
     s = re.sub(r"^\d+[\.\)]\s*", "", s)
     # Strip archive.org-style prefixes:
@@ -290,6 +301,10 @@ def normalize_song(conn, raw_title):
     """
     cleaned = clean_title(raw_title)
     if not cleaned:
+        return None, None, None
+
+    # Reject titles that are purely punctuation or too short to be a song name
+    if len(cleaned) < 2 or not re.search(r'[a-zA-Z]', cleaned):
         return None, None, None
 
     lower = cleaned.lower()

@@ -5,6 +5,8 @@ import os
 # ── Paths ──────────────────────────────────────────────────────────────
 DB_DIR = os.path.expanduser("~/.gdtimings")
 DB_PATH = os.path.join(DB_DIR, "gdtimings.db")
+ARCHIVE_CACHE_DIR = os.path.join(DB_DIR, "cache")
+ARCHIVE_DEFAULT_WORKERS = 8
 
 # ── Wikipedia API ──────────────────────────────────────────────────────
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"

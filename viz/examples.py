@@ -158,7 +158,7 @@ def _duration_bins(durs):
     return bins
 
 
-def _sunflower_layout(durs):
+def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1):
     """Place tiles on a Fermat sunflower spiral (golden-angle spacing).
 
     Each successive tile is rotated by the golden angle (~137.5°) and pushed
@@ -171,15 +171,11 @@ def _sunflower_layout(durs):
     max_dur = durs.max()
 
     # ── Tile sizes: area ∝ duration → side ∝ √duration ──
-    min_size = 0.35
-    max_size = 2.4
     tile_sizes = min_size + np.sqrt(durs / max_dur) * (max_size - min_size)
 
     # ── Golden-angle spiral positions ──
     golden_angle = np.pi * (3 - np.sqrt(5))  # ≈ 2.3999 rad ≈ 137.508°
-    # Spacing constant: controls how tightly packed the spiral is.
-    # Larger c → more spread out.  Tune so tiles mostly touch.
-    c = 1.1
+    c = spacing
     tile_cx = np.empty(n)
     tile_cy = np.empty(n)
     tile_angles = np.empty(n)
@@ -768,8 +764,9 @@ def plot_hilbert_duration(conn):
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
     lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
 
-    # ── Sunflower spiral layout (already sorted longest-first) ──
-    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
+    # ── Sunflower spiral layout — wide size range for clear area contrast ──
+    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
+        durs, min_size=0.12, max_size=4.0, spacing=1.6)
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -875,8 +872,9 @@ def plot_gosper_duration(conn):
     bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
     lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
 
-    # ── Sunflower spiral layout (already sorted longest-first) ──
-    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
+    # ── Sunflower spiral layout — wide size range for clear area contrast ──
+    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
+        durs, min_size=0.12, max_size=4.0, spacing=1.6)
 
     # Gosper curves don't fill their bounding box as densely as Hilbert,
     # so scale up by ~30% for visual equivalence.

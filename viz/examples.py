@@ -6,6 +6,7 @@ Usage:
 
 import os
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
@@ -724,12 +725,244 @@ def _gosper_points(order):
     return np.array(points)
 
 
-def plot_hilbert(conn):
+def _sunflower_layout(durs):
+    """Place tiles on a Fermat sunflower spiral (golden-angle spacing).
+
+    Each successive tile is rotated by the golden angle (~137.5°) and pushed
+    outward by √i, producing the classic sunflower seed pattern.  Tile side
+    length ∝ √duration so that tile *area* ∝ duration.
+
+    Returns (tile_cx, tile_cy, tile_angles, tile_sizes, r_outer).
+    """
+    n = len(durs)
+    max_dur = durs.max()
+
+    # ── Tile sizes: area ∝ duration → side ∝ √duration ──
+    min_size = 0.35
+    max_size = 2.4
+    tile_sizes = min_size + np.sqrt(durs / max_dur) * (max_size - min_size)
+
+    # ── Golden-angle spiral positions ──
+    golden_angle = np.pi * (3 - np.sqrt(5))  # ≈ 2.3999 rad ≈ 137.508°
+    # Spacing constant: controls how tightly packed the spiral is.
+    # Larger c → more spread out.  Tune so tiles mostly touch.
+    c = 1.1
+    tile_cx = np.empty(n)
+    tile_cy = np.empty(n)
+    tile_angles = np.empty(n)
+    for i in range(n):
+        theta = i * golden_angle
+        r = c * np.sqrt(i + 1)
+        tile_cx[i] = r * np.cos(theta)
+        tile_cy[i] = r * np.sin(theta)
+        tile_angles[i] = theta
+
+    r_outer = c * np.sqrt(n) + max_size
+    return tile_cx, tile_cy, tile_angles, tile_sizes, r_outer
+
+
+# ── Strip-layout helpers for plots 11 & 12 ──────────────────────────────
+
+# Season blocks for strip layout: month → block index & label
+_STRIP_SEASONS = {
+    1: (0, "Spring"), 2: (0, "Spring"), 3: (0, "Spring"),
+    4: (0, "Spring"), 5: (0, "Spring"),
+    6: (1, "Summer"), 7: (1, "Summer"), 8: (1, "Summer"),
+    9: (1, "Summer"),
+    10: (2, "Fall/Winter"), 11: (2, "Fall/Winter"), 12: (2, "Fall/Winter"),
+}
+_SEASON_LABELS = ["Spring", "Summer", "Fall/Winter"]
+
+
+def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=1.8,
+                  max_strip_height=4.5, season_gap=1.8, year_gap=1.0,
+                  hiatus_gap=4.0, min_size=0.3, max_size=2.0, seed=42):
+    """Compute tile positions for a year-strip layout.
+
+    Parameters
+    ----------
+    year_data : dict[int, list[dict]]
+        {year: [{"dur_min": float, "month": int, "date": str}, ...]},
+        each list already sorted by date.
+
+    Returns
+    -------
+    tiles : list[dict]
+        Per-tile dict with keys: cx, cy, size, rotation, dur_min, date, year.
+    strip_bounds : dict[int, dict]
+        {year: {"y_center", "height", "x_left", "x_right",
+                "blocks": [(x_start, x_end, label), ...]}}.
+    fig_bounds : tuple (x_min, x_max, y_min, y_max).
+    """
+    rng = np.random.default_rng(seed)
+
+    all_years = sorted(year_data.keys())
+
+    # Global stats for scaling
+    year_total_min = {}
+    year_count = {}
+    for yr, perfs in year_data.items():
+        year_total_min[yr] = sum(p["dur_min"] for p in perfs)
+        year_count[yr] = len(perfs)
+
+    max_total = max(year_total_min.values()) if year_total_min else 1
+    max_count = max(year_count.values()) if year_count else 1
+    max_dur = max(p["dur_min"] for perfs in year_data.values() for p in perfs)
+
+    tiles = []
+    strip_bounds = {}
+    y_cursor = 0.0  # top of the figure
+
+    for yr in all_years:
+        perfs = year_data[yr]
+        if not perfs:
+            continue
+
+        # Strip dimensions
+        tot = year_total_min.get(yr, 0)
+        cnt = year_count.get(yr, 0)
+        strip_w = np.sqrt(tot / max_total) * max_strip_width
+        strip_h = min_strip_height + (max_strip_height - min_strip_height) * np.sqrt(cnt / max_count)
+
+        y_center = y_cursor - strip_h / 2
+
+        # Group performances into season blocks
+        blocks = defaultdict(list)  # block_idx → list of perfs
+        for p in perfs:
+            bidx, _ = _STRIP_SEASONS[p["month"]]
+            blocks[bidx].append(p)
+
+        # Block widths proportional to duration share
+        block_durs = {}
+        for bidx, bperfs in blocks.items():
+            block_durs[bidx] = sum(p["dur_min"] for p in bperfs)
+        total_block_dur = sum(block_durs.values()) or 1
+
+        active_blocks = sorted(blocks.keys())
+        n_gaps = max(0, len(active_blocks) - 1)
+        usable_w = strip_w - n_gaps * season_gap
+
+        block_widths = {}
+        for bidx in active_blocks:
+            block_widths[bidx] = (block_durs[bidx] / total_block_dur) * usable_w
+
+        # Compute block x-ranges, centered on x=0
+        total_used = sum(block_widths.values()) + n_gaps * season_gap
+        x_start = -total_used / 2
+
+        block_ranges = {}
+        strip_block_info = []
+        cursor = x_start
+        for i, bidx in enumerate(active_blocks):
+            bw = block_widths[bidx]
+            block_ranges[bidx] = (cursor, cursor + bw)
+            strip_block_info.append((cursor, cursor + bw, _SEASON_LABELS[bidx]))
+            cursor += bw
+            if i < len(active_blocks) - 1:
+                cursor += season_gap
+
+        # Place tiles within each block, L→R chronologically
+        for bidx in active_blocks:
+            bperfs = blocks[bidx]
+            bx0, bx1 = block_ranges[bidx]
+            bw = bx1 - bx0
+            total_bdur = sum(p["dur_min"] for p in bperfs) or 1
+
+            # Each tile gets x-space proportional to its duration
+            x_pos = bx0
+            for p in bperfs:
+                frac = p["dur_min"] / total_bdur
+                tile_w = frac * bw
+                cx = x_pos + tile_w / 2
+                cy = y_center + rng.uniform(-strip_h * 0.25, strip_h * 0.25)
+
+                size = min_size + np.sqrt(p["dur_min"] / max_dur) * (max_size - min_size)
+                rotation = rng.uniform(0, 2 * np.pi)
+
+                tiles.append({
+                    "cx": cx, "cy": cy, "size": size, "rotation": rotation,
+                    "dur_min": p["dur_min"], "date": p["date"],
+                    "year": yr, "month": p["month"],
+                })
+                x_pos += tile_w
+
+        strip_bounds[yr] = {
+            "y_center": y_center, "height": strip_h,
+            "x_left": -total_used / 2, "x_right": total_used / 2,
+            "blocks": strip_block_info,
+        }
+
+        y_cursor -= strip_h + year_gap
+
+        # Double gap for 1974→1976 hiatus
+        if yr == 1974:
+            y_cursor -= hiatus_gap
+
+    x_min = min(sb["x_left"] for sb in strip_bounds.values()) - 4
+    x_max = max(sb["x_right"] for sb in strip_bounds.values()) + 4
+    y_min = y_cursor - 2
+    y_max = 2
+
+    return tiles, strip_bounds, (x_min, x_max, y_min, y_max)
+
+
+def _catmull_rom_chain(points, num_interp=8):
+    """Centripetal Catmull-Rom spline through (N, 2) control points.
+
+    Falls back to linear interpolation for <4 points.
+    """
+    points = np.asarray(points, dtype=float)
+    n = len(points)
+    if n < 2:
+        return points.copy()
+    if n < 4:
+        # Linear interpolation fallback
+        segs = []
+        for i in range(n - 1):
+            ts = np.linspace(0, 1, num_interp, endpoint=(i == n - 2))
+            seg = points[i] + ts[:, None] * (points[i + 1] - points[i])
+            segs.append(seg)
+        return np.vstack(segs)
+
+    alpha = 0.5  # centripetal
+
+    def _t(ti, pi, pj):
+        d = np.linalg.norm(pj - pi)
+        return ti + d ** alpha
+
+    result = []
+    # Pad with phantom points
+    pts = np.vstack([2 * points[0] - points[1], points,
+                     2 * points[-1] - points[-2]])
+    for i in range(len(pts) - 3):
+        p0, p1, p2, p3 = pts[i], pts[i + 1], pts[i + 2], pts[i + 3]
+        t0 = 0.0
+        t1 = _t(t0, p0, p1)
+        t2 = _t(t1, p1, p2)
+        t3 = _t(t2, p2, p3)
+
+        last = (i == len(pts) - 4)
+        ts = np.linspace(t1, t2, num_interp, endpoint=last)
+        for t in ts:
+            a1 = (t1 - t) / (t1 - t0) * p0 + (t - t0) / (t1 - t0) * p1 if t1 != t0 else p0
+            a2 = (t2 - t) / (t2 - t1) * p1 + (t - t1) / (t2 - t1) * p2 if t2 != t1 else p1
+            a3 = (t3 - t) / (t3 - t2) * p2 + (t - t2) / (t3 - t2) * p3 if t3 != t2 else p2
+            b1 = (t2 - t) / (t2 - t0) * a1 + (t - t0) / (t2 - t0) * a2 if t2 != t0 else a1
+            b2 = (t3 - t) / (t3 - t1) * a2 + (t - t1) / (t3 - t1) * a3 if t3 != t1 else a2
+            c = (t2 - t) / (t2 - t1) * b1 + (t - t1) / (t2 - t1) * b2 if t2 != t1 else b1
+            result.append(c)
+
+    return np.array(result)
+
+
+def _query_pitb_with_month(conn):
+    """Query PITB performances with concert_month included."""
     rows = conn.execute("""
-        SELECT sub.concert_date, sub.concert_year,
+        SELECT sub.concert_date, sub.concert_year, sub.concert_month,
                sub.max_dur / 60.0 AS dur_min
         FROM (
             SELECT r.concert_date, r.concert_year,
+                   CAST(SUBSTR(r.concert_date, 6, 2) AS INTEGER) AS concert_month,
                    MAX(t.duration_seconds) AS max_dur,
                    ROW_NUMBER() OVER (
                        PARTITION BY r.concert_date
@@ -746,9 +979,25 @@ def plot_hilbert(conn):
         WHERE sub.rn = 1
         ORDER BY sub.concert_date
     """).fetchall()
+    return rows
+
+
+def _build_year_data(rows):
+    """Group PITB query rows into year_data dict for _strip_layout."""
+    year_data = defaultdict(list)
+    for r in rows:
+        year_data[r["concert_year"]].append({
+            "dur_min": r["dur_min"],
+            "month": r["concert_month"],
+            "date": r["concert_date"],
+        })
+    return dict(year_data)
+
+
+def plot_hilbert(conn):
+    rows = _query_pitb_with_month(conn)
 
     durs = np.array([r["dur_min"] for r in rows])
-    years = np.array([r["concert_year"] for r in rows])
     n_tiles = len(rows)
     max_dur = durs.max()
 
@@ -757,7 +1006,7 @@ def plot_hilbert(conn):
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # ── Choose order & tile size per performance ──
+    # ── Choose order per performance ──
     tile_orders = np.empty(n_tiles, dtype=int)
     for i, d in enumerate(durs):
         if d < 5:
@@ -769,60 +1018,20 @@ def plot_hilbert(conn):
         else:
             tile_orders[i] = 5
 
-    # Tile size: area ∝ duration → linear size ∝ sqrt(duration)
-    min_tile = 0.3
-    max_tile = 3.0
-    tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
-
-    # ── Fermat sunflower layout with season sectors and era break ──
-    gap_after = {1974: 40}
-    golden_angle = np.pi * (3 - np.sqrt(5))
-    spacing = 0.7
-
-    # Classify each performance into touring season
-    months = np.array([int(r["concert_date"][5:7]) for r in rows])
-    seasons = [MONTH_TO_SEASON[m] for m in months]
-
-    adjusted = np.empty(n_tiles, dtype=float)
-    offset = 0
-    for i in range(n_tiles):
-        if i > 0:
-            for gy, gsize in gap_after.items():
-                if years[i - 1] <= gy < years[i]:
-                    offset += gsize
-        adjusted[i] = i + 1 + offset
-
-    # Radius from chronological order, angle from season sector
-    effective_width = _SECTOR_WIDTH - 2 * _SECTOR_MARGIN
-    season_counts = {"Spring": 0, "Summer": 0, "Fall/Winter": 0}
-    tile_cx = np.empty(n_tiles)
-    tile_cy = np.empty(n_tiles)
-    for i in range(n_tiles):
-        r = spacing * np.sqrt(adjusted[i])
-        s = seasons[i]
-        theta_in_sector = (season_counts[s] * golden_angle) % effective_width
-        theta = SEASON_SECTORS[s] + _SECTOR_MARGIN + theta_in_sector
-        tile_cx[i] = r * np.cos(theta)
-        tile_cy[i] = r * np.sin(theta)
-        season_counts[s] += 1
-
-    tile_rs = spacing * np.sqrt(adjusted)
+    # ── Sunflower spiral layout ──
+    tile_cx, tile_cy, tile_angles, tile_sizes, r_outer = _sunflower_layout(durs)
 
     # ── Color = duration (power-law scale) ──
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
 
-    fig, ax = plt.subplots(figsize=(14, 16))
+    fig, ax = plt.subplots(figsize=(22, 22))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
-    x_lo, x_hi = np.inf, -np.inf
-    y_lo, y_hi = np.inf, -np.inf
-
     # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
-
-    lw_map = {2: 2.0, 3: 1.2, 4: 0.7, 5: 0.45}
+    lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
 
     for idx in draw_order:
         size = tile_sizes[idx]
@@ -836,7 +1045,7 @@ def plot_hilbert(conn):
         pts = curves[order]
         grid_n = grids[order]
 
-        margin = 0.06 * size
+        margin = 0.04 * size
         span = size - 2 * margin
         denom = max(grid_n - 1, 1)
         xs = [ox + margin + (p[0] / denom) * span for p in pts]
@@ -844,62 +1053,22 @@ def plot_hilbert(conn):
 
         zorder = 1 + durs[idx] / max_dur
         lw = lw_map[order]
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.9,
+        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.95,
                 solid_capstyle="round", zorder=zorder)
 
-        x_lo = min(x_lo, min(xs))
-        x_hi = max(x_hi, max(xs))
-        y_lo = min(y_lo, min(ys))
-        y_hi = max(y_hi, max(ys))
-
-    # ── Era break rings and labels ──
-    for gy, gsize in gap_after.items():
-        before = np.where(years <= gy)[0]
-        after = np.where(years > gy)[0]
-        if len(before) == 0 or len(after) == 0:
-            continue
-        inner_r = tile_rs[before[-1]]
-        outer_r = tile_rs[after[0]]
-        mid_r = (inner_r + outer_r) / 2
-
-        for ring_r in (inner_r, outer_r):
-            circle = plt.Circle((0, 0), ring_r, fill=False,
-                                 edgecolor="#667788", linewidth=1.0,
-                                 linestyle="-", alpha=0.6, zorder=3)
-            ax.add_patch(circle)
-
-        ax.text(0, mid_r, str(gy + 1), color="#99aabb", fontsize=11,
-                ha="center", va="center", fontweight="bold", zorder=5,
-                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=2))
-
-    # ── Season divider lines and labels ──
-    max_r = tile_rs.max() + max_tile
-    for base_angle in SEASON_SECTORS.values():
-        ax.plot([0, max_r * np.cos(base_angle)],
-                [0, max_r * np.sin(base_angle)],
-                color="#667788", linewidth=1.0, alpha=0.5,
-                linestyle="--", zorder=3)
-    for name, base_angle in SEASON_SECTORS.items():
-        mid_angle = base_angle + _SECTOR_WIDTH / 2
-        label_r = max_r * 0.92
-        ax.text(label_r * np.cos(mid_angle), label_r * np.sin(mid_angle),
-                name, color="#99aabb", fontsize=13,
-                ha="center", va="center", fontweight="bold", zorder=5,
-                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=3, alpha=0.8))
-
-    pad = max_tile * 0.5
-    ax.set_xlim(x_lo - pad, x_hi + pad)
-    ax.set_ylim(y_lo - pad, y_hi + pad)
+    pad = 3.5
+    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ── Legend area at top ──
-    ax.set_title("Playing in the Band — Hilbert Spiral\n"
-                 "center → outward chronologically  ·  "
+    # ── Title ──
+    ax.set_title("Playing in the Band — Hilbert Sunflower\n"
+                 "golden-angle spiral  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
-                 fontsize=14, pad=14, color="white")
+                 fontsize=15, pad=14, color="white")
 
-    cax = fig.add_axes([0.20, 0.93, 0.60, 0.015])
+    cax = fig.add_axes([0.20, 0.94, 0.60, 0.012])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
@@ -915,15 +1084,15 @@ def plot_hilbert(conn):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 10. Gosper Spiral — sunflower layout, era breaks, tile area ∝ duration
+# 10. Gosper Rings — concentric year-rings, season sectors, tile area ∝ duration
 # ══════════════════════════════════════════════════════════════════════════
 def plot_gosper_flow(conn):
-    """Gosper curve tiles in a Fermat sunflower layout with seasonal sectors.
+    """Gosper curve tiles on radial time-sweep layout.
 
-    Dense organic packing where tile size and Gosper order scale with
-    duration.  Long jams produce large, intricate curves that overflow
-    into neighboring space.  Three angular sectors show Spring (Feb-May),
-    Summer (Jun-Sep), and Fall/Winter (Oct-Jan) touring seasons.
+    Time sweeps clockwise from 12 o'clock.  Each tile's angular arc is
+    proportional to its duration in minutes.  6 o'clock ≈ 1978 (the
+    cumulative-minutes midpoint).  Tiles packed into concentric lanes
+    to create a continuous visual mass.
     """
 
     rows = conn.execute("""
@@ -949,13 +1118,12 @@ def plot_gosper_flow(conn):
     """).fetchall()
 
     durs = np.array([r["dur_min"] for r in rows])
-    years = np.array([r["concert_year"] for r in rows])
     n_perfs = len(rows)
     max_dur = durs.max()
 
     # ── Pre-compute Gosper curves at orders 1-4 ──
-    gosper_norm = {}    # centered & unit-scaled points
-    gosper_angle = {}   # angle of start→end vector (for alignment)
+    gosper_norm = {}
+    gosper_angle = {}
     for order in range(1, 5):
         raw = _gosper_points(order)
         delta = raw[-1] - raw[0]
@@ -968,7 +1136,7 @@ def plot_gosper_flow(conn):
             centered /= extent
         gosper_norm[order] = centered
 
-    # ── Choose order & tile size per performance ──
+    # ── Choose order per performance ──
     orders = np.empty(n_perfs, dtype=int)
     for i, d in enumerate(durs):
         if d < 5:
@@ -980,59 +1148,24 @@ def plot_gosper_flow(conn):
         else:
             orders[i] = 4
 
-    # Tile size: area ∝ duration → linear size ∝ sqrt(duration)
-    min_tile = 0.3
-    max_tile = 3.0
-    tile_sizes = min_tile + np.sqrt(durs / max_dur) * (max_tile - min_tile)
+    # ── Sunflower spiral layout ──
+    tile_cx, tile_cy, tile_angles, tile_sizes, r_outer = _sunflower_layout(durs)
 
-    # ── Fermat sunflower layout with season sectors and era break ──
-    gap_after = {1974: 40}
-    golden_angle = np.pi * (3 - np.sqrt(5))   # ≈ 137.508°
-    spacing = 0.7
+    # Gosper curves don't fill their bounding box as densely as Hilbert,
+    # so scale up by ~30% for visual equivalence.
+    tile_sizes = tile_sizes * 1.3
 
-    # Classify each performance into touring season
-    months = np.array([int(r["concert_date"][5:7]) for r in rows])
-    seasons = [MONTH_TO_SEASON[m] for m in months]
-
-    adjusted = np.empty(n_perfs, dtype=float)
-    offset = 0
-    for i in range(n_perfs):
-        if i > 0:
-            for gy, gsize in gap_after.items():
-                if years[i - 1] <= gy < years[i]:
-                    offset += gsize
-        adjusted[i] = i + 1 + offset
-
-    # Radius from chronological order, angle from season sector
-    effective_width = _SECTOR_WIDTH - 2 * _SECTOR_MARGIN
-    season_counts = {"Spring": 0, "Summer": 0, "Fall/Winter": 0}
-    tile_cx = np.empty(n_perfs)
-    tile_cy = np.empty(n_perfs)
-    for i in range(n_perfs):
-        r = spacing * np.sqrt(adjusted[i])
-        s = seasons[i]
-        theta_in_sector = (season_counts[s] * golden_angle) % effective_width
-        theta = SEASON_SECTORS[s] + _SECTOR_MARGIN + theta_in_sector
-        tile_cx[i] = r * np.cos(theta)
-        tile_cy[i] = r * np.sin(theta)
-        season_counts[s] += 1
-
-    tile_rs = spacing * np.sqrt(adjusted)
-
-    # ── Orient each tile radially outward ──
+    # Orient tiles radially outward from center
     orient_angles = np.arctan2(tile_cy, tile_cx)
 
-    # ── Draw (power-law color scale for better contrast) ──
+    # ── Draw ──
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {1: 2.5, 2: 1.5, 3: 0.8, 4: 0.45}
+    lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
 
-    fig, ax = plt.subplots(figsize=(14, 16))
+    fig, ax = plt.subplots(figsize=(22, 22))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
-
-    x_lo, x_hi = np.inf, -np.inf
-    y_lo, y_hi = np.inf, -np.inf
 
     # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_perfs), key=lambda i: durs[i])
@@ -1053,61 +1186,22 @@ def plot_gosper_flow(conn):
         zorder = 1 + durs[idx] / max_dur
         lw = lw_map[order]
 
-        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.9,
+        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.95,
                 solid_capstyle="round", zorder=zorder)
 
-        x_lo, x_hi = min(x_lo, rx.min()), max(x_hi, rx.max())
-        y_lo, y_hi = min(y_lo, ry.min()), max(y_hi, ry.max())
-
-    # ── Era break rings and labels ──
-    for gy, gsize in gap_after.items():
-        # Find last performance at or before gap year, first after
-        before = np.where(years <= gy)[0]
-        after = np.where(years > gy)[0]
-        if len(before) == 0 or len(after) == 0:
-            continue
-        inner_r = tile_rs[before[-1]]
-        outer_r = tile_rs[after[0]]
-        mid_r = (inner_r + outer_r) / 2
-
-        for ring_r in (inner_r, outer_r):
-            circle = plt.Circle((0, 0), ring_r, fill=False,
-                                 edgecolor="#667788", linewidth=1.0,
-                                 linestyle="-", alpha=0.6, zorder=3)
-            ax.add_patch(circle)
-
-        ax.text(0, mid_r, str(gy + 1), color="#99aabb", fontsize=11,
-                ha="center", va="center", fontweight="bold", zorder=5,
-                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=2))
-
-    # ── Season divider lines and labels ──
-    max_r = tile_rs.max() + max_tile
-    for base_angle in SEASON_SECTORS.values():
-        ax.plot([0, max_r * np.cos(base_angle)],
-                [0, max_r * np.sin(base_angle)],
-                color="#667788", linewidth=1.0, alpha=0.5,
-                linestyle="--", zorder=3)
-    for name, base_angle in SEASON_SECTORS.items():
-        mid_angle = base_angle + _SECTOR_WIDTH / 2
-        label_r = max_r * 0.92
-        ax.text(label_r * np.cos(mid_angle), label_r * np.sin(mid_angle),
-                name, color="#99aabb", fontsize=13,
-                ha="center", va="center", fontweight="bold", zorder=5,
-                bbox=dict(facecolor="#1a1a2e", edgecolor="none", pad=3, alpha=0.8))
-
-    pad = max_tile * 0.5
-    ax.set_xlim(x_lo - pad, x_hi + pad)
-    ax.set_ylim(y_lo - pad, y_hi + pad)
+    pad = 3.5
+    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ── Legend area at top (larger fonts) ──
-    ax.set_title("Playing in the Band — Gosper Spiral\n"
-                 "center → outward chronologically  ·  "
+    # ── Title ──
+    ax.set_title("Playing in the Band — Gosper Sunflower\n"
+                 "golden-angle spiral  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
-                 fontsize=14, pad=14, color="white")
+                 fontsize=15, pad=14, color="white")
 
-    cax = fig.add_axes([0.20, 0.93, 0.60, 0.015])
+    cax = fig.add_axes([0.20, 0.94, 0.60, 0.012])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
@@ -1120,6 +1214,266 @@ def plot_gosper_flow(conn):
                 facecolor=fig.get_facecolor())
     plt.close(fig)
     print("  10_gosper_flow_playing_in_band.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 11. Hilbert Strip — year-strips of PITB Hilbert tiles
+# ══════════════════════════════════════════════════════════════════════════
+
+def _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years):
+    """Draw strip backgrounds, year labels, season labels, and hiatus marker."""
+    # Strip background rects
+    for yr, sb in strip_bounds.items():
+        rect = plt.Rectangle(
+            (sb["x_left"] - 0.5, sb["y_center"] - sb["height"] / 2),
+            sb["x_right"] - sb["x_left"] + 1.0, sb["height"],
+            facecolor="#252545", alpha=0.3, edgecolor="none", zorder=0,
+        )
+        ax.add_patch(rect)
+
+    # Year labels at left margin
+    x_label = fig_bounds[0] + 1.5
+    for yr, sb in strip_bounds.items():
+        ax.text(x_label, sb["y_center"], str(yr),
+                color="white", fontsize=9, fontweight="bold",
+                ha="right", va="center", zorder=5)
+
+    # 1975 hiatus label
+    if 1974 in strip_bounds and 1976 in strip_bounds:
+        y_1974 = strip_bounds[1974]["y_center"] - strip_bounds[1974]["height"] / 2
+        y_1976 = strip_bounds[1976]["y_center"] + strip_bounds[1976]["height"] / 2
+        y_hiatus = (y_1974 + y_1976) / 2
+        ax.text(x_label, y_hiatus, "1975",
+                color="#666688", fontsize=8, fontstyle="italic",
+                ha="right", va="center", zorder=5)
+        ax.text(x_label + 2.5, y_hiatus, "— hiatus",
+                color="#666688", fontsize=7, fontstyle="italic",
+                ha="left", va="center", zorder=5)
+
+    # Season labels above the topmost strip
+    first_yr = all_years[0] if all_years else None
+    if first_yr and first_yr in strip_bounds:
+        sb = strip_bounds[first_yr]
+        y_top = sb["y_center"] + sb["height"] / 2 + 1.2
+        for x0, x1, label in sb["blocks"]:
+            ax.text((x0 + x1) / 2, y_top, label,
+                    color="#aaaacc", fontsize=8, ha="center", va="bottom",
+                    zorder=5)
+
+
+def plot_hilbert_strip(conn):
+    """Year-strip layout with Hilbert curve tiles for PITB."""
+    rows = _query_pitb_with_month(conn)
+    year_data = _build_year_data(rows)
+    tiles, strip_bounds, fig_bounds = _strip_layout(year_data)
+
+    all_durs = np.array([t["dur_min"] for t in tiles])
+    max_dur = all_durs.max()
+
+    # Pre-compute Hilbert curves
+    h_orders = [2, 3, 4, 5]
+    curves = {o: _hilbert_points(o) for o in h_orders}
+    grids = {o: 2 ** o for o in h_orders}
+
+    # Color mapping
+    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
+    cmap = plt.cm.YlOrRd
+    lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
+
+    fig, ax = plt.subplots(figsize=(24, 30))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    all_years = sorted(year_data.keys())
+    _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
+
+    # Draw Catmull-Rom splines per year (connecting thread)
+    year_tiles = defaultdict(list)
+    for t in tiles:
+        year_tiles[t["year"]].append(t)
+    for yr in all_years:
+        yt = year_tiles.get(yr, [])
+        if len(yt) < 2:
+            continue
+        pts = np.array([[t["cx"], t["cy"]] for t in yt])
+        smooth = _catmull_rom_chain(pts, num_interp=8)
+        ax.plot(smooth[:, 0], smooth[:, 1], color="white", alpha=0.15,
+                linewidth=0.4, zorder=0.5)
+
+    # Draw tiles — smallest first
+    draw_order = sorted(range(len(tiles)), key=lambda i: tiles[i]["dur_min"])
+    for idx in draw_order:
+        t = tiles[idx]
+        dur = t["dur_min"]
+        size = t["size"]
+        cx, cy = t["cx"], t["cy"]
+        rot = t["rotation"]
+
+        # Choose Hilbert order
+        if dur < 5:
+            order = 2
+        elif dur < 10:
+            order = 3
+        elif dur < 18:
+            order = 4
+        else:
+            order = 5
+
+        pts = curves[order]
+        grid_n = grids[order]
+        margin = 0.04 * size
+        span = size - 2 * margin
+        denom = max(grid_n - 1, 1)
+
+        # Build local coordinates centered on origin
+        local_x = np.array([-size / 2 + margin + (p[0] / denom) * span for p in pts])
+        local_y = np.array([-size / 2 + margin + (p[1] / denom) * span for p in pts])
+
+        # Rotate and translate
+        ca, sa = np.cos(rot), np.sin(rot)
+        xs = local_x * ca - local_y * sa + cx
+        ys = local_x * sa + local_y * ca + cy
+
+        color = cmap(dur_norm(dur))
+        zorder = 1 + dur / max_dur
+        lw = lw_map[order]
+        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.95,
+                solid_capstyle="round", zorder=zorder)
+
+    ax.set_xlim(fig_bounds[0], fig_bounds[1])
+    ax.set_ylim(fig_bounds[2], fig_bounds[3])
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    ax.set_title("Playing in the Band — Hilbert Year Strips\n"
+                 "tile area & complexity ∝ duration  ·  "
+                 "chronological L→R  ·  season gaps",
+                 fontsize=15, pad=14, color="white")
+
+    cax = fig.add_axes([0.20, 0.96, 0.60, 0.008])
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
+    sm.set_array([])
+    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
+    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
+    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
+    cb.ax.xaxis.set_label_position("top")
+    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
+
+    fig.savefig(OUTPUT_DIR / "11_hilbert_strip_playing_in_band.png", dpi=200,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  11_hilbert_strip_playing_in_band.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 12. Gosper Strip — year-strips of PITB Gosper tiles
+# ══════════════════════════════════════════════════════════════════════════
+
+def plot_gosper_strip(conn):
+    """Year-strip layout with Gosper curve tiles for PITB."""
+    rows = _query_pitb_with_month(conn)
+    year_data = _build_year_data(rows)
+    tiles, strip_bounds, fig_bounds = _strip_layout(year_data)
+
+    all_durs = np.array([t["dur_min"] for t in tiles])
+    max_dur = all_durs.max()
+
+    # Pre-compute normalized Gosper curves
+    gosper_norm = {}
+    gosper_angle = {}
+    for order in range(1, 5):
+        raw = _gosper_points(order)
+        delta = raw[-1] - raw[0]
+        gosper_angle[order] = np.arctan2(delta[1], delta[0])
+        mid = (raw[0] + raw[-1]) / 2
+        centered = raw - mid
+        extent = max(centered[:, 0].max() - centered[:, 0].min(),
+                     centered[:, 1].max() - centered[:, 1].min())
+        if extent > 0:
+            centered /= extent
+        gosper_norm[order] = centered
+
+    # Color mapping
+    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
+    cmap = plt.cm.YlOrRd
+    lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
+
+    fig, ax = plt.subplots(figsize=(24, 30))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    all_years = sorted(year_data.keys())
+    _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
+
+    # Draw Catmull-Rom splines per year
+    year_tiles = defaultdict(list)
+    for t in tiles:
+        year_tiles[t["year"]].append(t)
+    for yr in all_years:
+        yt = year_tiles.get(yr, [])
+        if len(yt) < 2:
+            continue
+        pts = np.array([[t["cx"], t["cy"]] for t in yt])
+        smooth = _catmull_rom_chain(pts, num_interp=8)
+        ax.plot(smooth[:, 0], smooth[:, 1], color="white", alpha=0.15,
+                linewidth=0.4, zorder=0.5)
+
+    # Draw tiles — smallest first
+    draw_order = sorted(range(len(tiles)), key=lambda i: tiles[i]["dur_min"])
+    for idx in draw_order:
+        t = tiles[idx]
+        dur = t["dur_min"]
+        size = t["size"] * 1.3  # Gosper density compensation
+        cx, cy = t["cx"], t["cy"]
+        rot = t["rotation"]
+
+        # Choose Gosper order
+        if dur < 5:
+            order = 1
+        elif dur < 10:
+            order = 2
+        elif dur < 20:
+            order = 3
+        else:
+            order = 4
+
+        pts = gosper_norm[order].copy()
+        # Subtract intrinsic angle so curve aligns with tile rotation
+        rot_adj = rot - gosper_angle[order]
+        ca, sa = np.cos(rot_adj), np.sin(rot_adj)
+        scaled = pts * size
+        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + cx
+        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + cy
+
+        color = cmap(dur_norm(dur))
+        zorder = 1 + dur / max_dur
+        lw = lw_map[order]
+        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.95,
+                solid_capstyle="round", zorder=zorder)
+
+    ax.set_xlim(fig_bounds[0], fig_bounds[1])
+    ax.set_ylim(fig_bounds[2], fig_bounds[3])
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    ax.set_title("Playing in the Band — Gosper Year Strips\n"
+                 "tile area & complexity ∝ duration  ·  "
+                 "chronological L→R  ·  season gaps",
+                 fontsize=15, pad=14, color="white")
+
+    cax = fig.add_axes([0.20, 0.96, 0.60, 0.008])
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
+    sm.set_array([])
+    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
+    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
+    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
+    cb.ax.xaxis.set_label_position("top")
+    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
+
+    fig.savefig(OUTPUT_DIR / "12_gosper_strip_playing_in_band.png", dpi=200,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  12_gosper_strip_playing_in_band.png")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1139,8 +1493,10 @@ def main():
     plot_envelope(conn)
     plot_hilbert(conn)
     plot_gosper_flow(conn)
+    plot_hilbert_strip(conn)
+    plot_gosper_strip(conn)
     conn.close()
-    print(f"Done — 10 plots saved to {OUTPUT_DIR}/")
+    print(f"Done — 12 plots saved to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":

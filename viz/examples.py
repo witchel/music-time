@@ -137,6 +137,27 @@ def _gosper_points(order):
     return np.array(points)
 
 
+# ── Duration-bin color palette (jewel tones on dark background) ───────
+BIN_COLORS = ["#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]  # gold, coral, teal, lavender
+BIN_LABELS = ["Epic jams", "Extended", "Standard", "Short"]
+
+
+def _duration_bins(durs):
+    """Assign each duration to one of 4 quartile-based bins (0 = longest)."""
+    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    bins = np.empty(len(durs), dtype=int)
+    for i, d in enumerate(durs):
+        if d >= q75:
+            bins[i] = 0
+        elif d >= q50:
+            bins[i] = 1
+        elif d >= q25:
+            bins[i] = 2
+        else:
+            bins[i] = 3
+    return bins
+
+
 def _sunflower_layout(durs):
     """Place tiles on a Fermat sunflower spiral (golden-angle spacing).
 
@@ -327,7 +348,7 @@ def _build_year_data(rows):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 2. Hilbert Sunflower — Playing in the Band
+# 2. Hilbert Sunflower — Playing in the Band (chronological)
 # ══════════════════════════════════════════════════════════════════════════
 
 def plot_hilbert(conn):
@@ -355,7 +376,7 @@ def plot_hilbert(conn):
             tile_orders[i] = 5
 
     # ── Sunflower spiral layout ──
-    tile_cx, tile_cy, tile_angles, tile_sizes, r_outer = _sunflower_layout(durs)
+    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
 
     # ── Color = duration (power-law scale) ──
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
@@ -398,7 +419,6 @@ def plot_hilbert(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ── Title ──
     ax.set_title("Playing in the Band — Hilbert Sunflower\n"
                  "golden-angle spiral  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
@@ -420,7 +440,7 @@ def plot_hilbert(conn):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 3. Gosper Sunflower — Playing in the Band
+# 3. Gosper Sunflower — Playing in the Band (chronological)
 # ══════════════════════════════════════════════════════════════════════════
 def plot_gosper_flow(conn):
     """Gosper curve tiles on sunflower spiral layout."""
@@ -464,7 +484,7 @@ def plot_gosper_flow(conn):
             orders[i] = 4
 
     # ── Sunflower spiral layout ──
-    tile_cx, tile_cy, tile_angles, tile_sizes, r_outer = _sunflower_layout(durs)
+    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
 
     # Gosper curves don't fill their bounding box as densely as Hilbert,
     # so scale up by ~30% for visual equivalence.
@@ -510,7 +530,6 @@ def plot_gosper_flow(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ── Title ──
     ax.set_title("Playing in the Band — Gosper Sunflower\n"
                  "golden-angle spiral  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
@@ -725,6 +744,203 @@ def plot_gosper_strip(conn):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 6. Hilbert Duration Sunflower — Playing in the Band
+# ══════════════════════════════════════════════════════════════════════════
+
+def plot_hilbert_duration(conn):
+    """Hilbert sunflower sorted by duration: longest jam at center."""
+    rows = _query_pitb_with_month(conn)
+
+    # Sort by duration descending — longest performance at spiral center
+    rows = sorted(rows, key=lambda r: r["dur_min"], reverse=True)
+    durs = np.array([r["dur_min"] for r in rows])
+    n_tiles = len(rows)
+    max_dur = durs.max()
+    rng = np.random.default_rng(42)
+
+    # Pre-compute Hilbert curves at multiple orders
+    h_orders = [2, 3, 4, 5]
+    curves = {o: _hilbert_points(o) for o in h_orders}
+    grids = {o: 2 ** o for o in h_orders}
+
+    # ── Quartile bins → curve order + color ──
+    bins = _duration_bins(durs)
+    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
+    lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
+
+    # ── Sunflower spiral layout (already sorted longest-first) ──
+    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
+
+    # Random rotation per tile
+    tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
+
+    fig, ax = plt.subplots(figsize=(22, 22))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    # Draw smallest tiles first so the epic jams render on top
+    draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
+
+    for idx in draw_order:
+        size = tile_sizes[idx]
+        cx, cy = tile_cx[idx], tile_cy[idx]
+        rot = tile_rots[idx]
+
+        bini = bins[idx]
+        color = BIN_COLORS[bini]
+        order = bin_to_order[bini]
+        pts = curves[order]
+        grid_n = grids[order]
+
+        margin = 0.04 * size
+        span = size - 2 * margin
+        denom = max(grid_n - 1, 1)
+
+        # Build local coordinates centered on origin, then rotate
+        local_x = np.array([-size / 2 + margin + (p[0] / denom) * span for p in pts])
+        local_y = np.array([-size / 2 + margin + (p[1] / denom) * span for p in pts])
+        ca, sa = np.cos(rot), np.sin(rot)
+        xs = local_x * ca - local_y * sa + cx
+        ys = local_x * sa + local_y * ca + cy
+
+        zorder = 1 + durs[idx] / max_dur
+        lw = lw_map[order]
+        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
+                solid_capstyle="round", zorder=zorder)
+
+    pad = 3.5
+    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    ax.set_ylim(-r_outer - pad, r_outer + pad)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    ax.set_title("Playing in the Band — Hilbert Duration Sunflower\n"
+                 "longest jam at center  ·  tile area & complexity ∝ duration",
+                 fontsize=15, pad=14, color="white")
+
+    # Legend
+    from matplotlib.patches import Patch
+    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    leg = ax.legend(handles=patches, loc="lower right", fontsize=11,
+                    framealpha=0.85, facecolor="#1a1a2e", edgecolor="#444",
+                    labelcolor="white")
+    leg.get_frame().set_linewidth(0.5)
+
+    fig.savefig(OUTPUT_DIR / "06_hilbert_duration_sunflower.png", dpi=200,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  06_hilbert_duration_sunflower.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 7. Gosper Duration Sunflower — Playing in the Band
+# ══════════════════════════════════════════════════════════════════════════
+
+def plot_gosper_duration(conn):
+    """Gosper sunflower sorted by duration: longest jam at center."""
+    rows = conn.execute("""
+        SELECT concert_date, concert_year, dur_min
+        FROM best_performances
+        WHERE song = 'Playing in the Band'
+        ORDER BY concert_date
+    """).fetchall()
+
+    # Sort by duration descending — longest performance at spiral center
+    rows = sorted(rows, key=lambda r: r["dur_min"], reverse=True)
+    durs = np.array([r["dur_min"] for r in rows])
+    n_perfs = len(rows)
+    max_dur = durs.max()
+    rng = np.random.default_rng(42)
+
+    # ── Pre-compute normalized Gosper curves at orders 1-4 ──
+    gosper_norm = {}
+    gosper_angle = {}
+    for order in range(1, 5):
+        raw = _gosper_points(order)
+        delta = raw[-1] - raw[0]
+        gosper_angle[order] = np.arctan2(delta[1], delta[0])
+        mid = (raw[0] + raw[-1]) / 2
+        centered = raw - mid
+        extent = max(centered[:, 0].max() - centered[:, 0].min(),
+                     centered[:, 1].max() - centered[:, 1].min())
+        if extent > 0:
+            centered /= extent
+        gosper_norm[order] = centered
+
+    # ── Quartile bins → curve order + color ──
+    bins = _duration_bins(durs)
+    bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
+    lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
+
+    # ── Sunflower spiral layout (already sorted longest-first) ──
+    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
+
+    # Gosper curves don't fill their bounding box as densely as Hilbert,
+    # so scale up by ~30% for visual equivalence.
+    tile_sizes = tile_sizes * 1.3
+
+    # Random rotation per tile
+    tile_rots = rng.uniform(0, 2 * np.pi, n_perfs)
+
+    fig, ax = plt.subplots(figsize=(22, 22))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    # Draw smallest tiles first so the epic jams render on top
+    draw_order = sorted(range(n_perfs), key=lambda i: durs[i])
+
+    for idx in draw_order:
+        bini = bins[idx]
+        order = bin_to_order[bini]
+        pts = gosper_norm[order].copy()
+        size = tile_sizes[idx]
+        rot = tile_rots[idx]
+
+        # Subtract intrinsic angle so curve aligns with random rotation
+        rot_adj = rot - gosper_angle[order]
+        ca, sa = np.cos(rot_adj), np.sin(rot_adj)
+        scaled = pts * size
+        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
+        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
+
+        color = BIN_COLORS[bini]
+        zorder = 1 + durs[idx] / max_dur
+        lw = lw_map[order]
+
+        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
+                solid_capstyle="round", zorder=zorder)
+
+    pad = 3.5
+    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    ax.set_ylim(-r_outer - pad, r_outer + pad)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    ax.set_title("Playing in the Band — Gosper Duration Sunflower\n"
+                 "longest jam at center  ·  tile area & complexity ∝ duration",
+                 fontsize=15, pad=14, color="white")
+
+    # Legend
+    from matplotlib.patches import Patch
+    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    leg = ax.legend(handles=patches, loc="lower right", fontsize=11,
+                    framealpha=0.85, facecolor="#1a1a2e", edgecolor="#444",
+                    labelcolor="white")
+    leg.get_frame().set_linewidth(0.5)
+
+    fig.savefig(OUTPUT_DIR / "07_gosper_duration_sunflower.png", dpi=200,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  07_gosper_duration_sunflower.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════
 def main():
@@ -736,8 +952,10 @@ def main():
     plot_gosper_flow(conn)
     plot_hilbert_strip(conn)
     plot_gosper_strip(conn)
+    plot_hilbert_duration(conn)
+    plot_gosper_duration(conn)
     conn.close()
-    print(f"Done — 5 plots saved to {OUTPUT_DIR}/")
+    print(f"Done — 7 plots saved to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":

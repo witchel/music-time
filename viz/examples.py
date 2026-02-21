@@ -158,12 +158,17 @@ def _duration_bins(durs):
     return bins
 
 
-def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1):
+def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1,
+                      size_aware=False):
     """Place tiles on a Fermat sunflower spiral (golden-angle spacing).
 
     Each successive tile is rotated by the golden angle (~137.5°) and pushed
     outward by √i, producing the classic sunflower seed pattern.  Tile side
     length ∝ √duration so that tile *area* ∝ duration.
+
+    If size_aware=True, radii accumulate based on tile sizes so that larger
+    tiles get more room — eliminates center overlap when tiles are sorted
+    by duration descending.
 
     Returns (tile_cx, tile_cy, tile_angles, tile_sizes, r_outer).
     """
@@ -175,18 +180,32 @@ def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1):
 
     # ── Golden-angle spiral positions ──
     golden_angle = np.pi * (3 - np.sqrt(5))  # ≈ 2.3999 rad ≈ 137.508°
-    c = spacing
     tile_cx = np.empty(n)
     tile_cy = np.empty(n)
     tile_angles = np.empty(n)
-    for i in range(n):
-        theta = i * golden_angle
-        r = c * np.sqrt(i + 1)
-        tile_cx[i] = r * np.cos(theta)
-        tile_cy[i] = r * np.sin(theta)
-        tile_angles[i] = theta
 
-    r_outer = c * np.sqrt(n) + max_size
+    if size_aware:
+        # Use r = c * (i+1)^0.7 instead of √i.  The steeper exponent
+        # spreads the first (largest) tiles further apart while still
+        # converging to a compact disc overall.
+        c = spacing * 0.5  # rescale so outer radius stays comparable
+        for i in range(n):
+            theta = i * golden_angle
+            r = c * (i + 1) ** 0.7
+            tile_cx[i] = r * np.cos(theta)
+            tile_cy[i] = r * np.sin(theta)
+            tile_angles[i] = theta
+        r_outer = c * n ** 0.7 + max_size
+    else:
+        c = spacing
+        for i in range(n):
+            theta = i * golden_angle
+            r = c * np.sqrt(i + 1)
+            tile_cx[i] = r * np.cos(theta)
+            tile_cy[i] = r * np.sin(theta)
+            tile_angles[i] = theta
+        r_outer = c * np.sqrt(n) + max_size
+
     return tile_cx, tile_cy, tile_angles, tile_sizes, r_outer
 
 
@@ -766,7 +785,7 @@ def plot_hilbert_duration(conn):
 
     # ── Sunflower spiral layout — wide size range for clear area contrast ──
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, spacing=2.0)
+        durs, min_size=0.12, max_size=4.0, size_aware=True)
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -874,7 +893,7 @@ def plot_gosper_duration(conn):
 
     # ── Sunflower spiral layout — wide size range for clear area contrast ──
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, spacing=2.0)
+        durs, min_size=0.12, max_size=4.0, size_aware=True)
 
     # Gosper curves don't fill their bounding box as densely as Hilbert,
     # so scale up by ~30% for visual equivalence.

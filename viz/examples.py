@@ -763,11 +763,12 @@ def plot_gosper_strip(conn):
 # ══════════════════════════════════════════════════════════════════════════
 
 def plot_hilbert_duration(conn):
-    """Hilbert sunflower sorted by duration: longest jam at center."""
+    """Hilbert sunflower sorted by duration: shortest at center, epic jams on rim."""
     rows = _query_pitb_with_month(conn)
 
-    # Sort by duration descending — longest performance at spiral center
-    rows = sorted(rows, key=lambda r: r["dur_min"], reverse=True)
+    # Sort by duration ascending — small tiles pack tightly at center,
+    # big tiles get the room they need at the outer edge.
+    rows = sorted(rows, key=lambda r: r["dur_min"])
     durs = np.array([r["dur_min"] for r in rows])
     n_tiles = len(rows)
     max_dur = durs.max()
@@ -785,7 +786,7 @@ def plot_hilbert_duration(conn):
 
     # ── Sunflower spiral layout — wide size range for clear area contrast ──
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, size_aware=True)
+        durs, min_size=0.12, max_size=4.0, spacing=2.5)
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -831,7 +832,7 @@ def plot_hilbert_duration(conn):
     ax.axis("off")
 
     ax.set_title("Playing in the Band — Hilbert Duration Sunflower\n"
-                 "longest jam at center  ·  tile area & complexity ∝ duration",
+                 "epic jams on the rim  ·  tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
     # Legend
@@ -856,7 +857,7 @@ def plot_hilbert_duration(conn):
 # ══════════════════════════════════════════════════════════════════════════
 
 def plot_gosper_duration(conn):
-    """Gosper sunflower sorted by duration: longest jam at center."""
+    """Gosper sunflower sorted by duration: shortest at center, epic jams on rim."""
     rows = conn.execute("""
         SELECT concert_date, concert_year, dur_min
         FROM best_performances
@@ -864,8 +865,9 @@ def plot_gosper_duration(conn):
         ORDER BY concert_date
     """).fetchall()
 
-    # Sort by duration descending — longest performance at spiral center
-    rows = sorted(rows, key=lambda r: r["dur_min"], reverse=True)
+    # Sort by duration ascending — small tiles pack tightly at center,
+    # big tiles get the room they need at the outer edge.
+    rows = sorted(rows, key=lambda r: r["dur_min"])
     durs = np.array([r["dur_min"] for r in rows])
     n_perfs = len(rows)
     max_dur = durs.max()
@@ -893,7 +895,7 @@ def plot_gosper_duration(conn):
 
     # ── Sunflower spiral layout — wide size range for clear area contrast ──
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, size_aware=True)
+        durs, min_size=0.12, max_size=4.0, spacing=2.5)
 
     # Gosper curves don't fill their bounding box as densely as Hilbert,
     # so scale up by ~30% for visual equivalence.
@@ -937,7 +939,7 @@ def plot_gosper_duration(conn):
     ax.axis("off")
 
     ax.set_title("Playing in the Band — Gosper Duration Sunflower\n"
-                 "longest jam at center  ·  tile area & complexity ∝ duration",
+                 "epic jams on the rim  ·  tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
     # Legend

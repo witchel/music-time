@@ -5,7 +5,7 @@ import csv
 import sys
 
 from gdtimings import db
-from gdtimings.analyze import compute_song_stats, print_song_summary
+from gdtimings.analyze import classify_song_types, compute_song_stats, print_song_summary
 
 
 def cmd_scrape(args):
@@ -29,8 +29,10 @@ def cmd_scrape(args):
 
 
 def cmd_analyze(args):
-    """Compute song duration statistics and detect outliers."""
+    """Classify song types, compute statistics, and detect outliers."""
     conn = db.get_connection()
+    print("Classifying song types...")
+    classify_song_types(conn)
     print("Computing song statistics...")
     compute_song_stats(conn)
     print_song_summary(conn)

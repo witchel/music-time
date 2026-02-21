@@ -1,49 +1,97 @@
-"""Outlier detection and consensus timing statistics."""
+"""Outlier detection and consensus timing statistics.
+
+Stats are computed per *show* (concert date), not per raw track:
+1. MAX(duration) within each release handles split songs (e.g. Dark Star V1/V2)
+2. Best release per concert date (highest quality_rank) avoids taper inflation
+3. Outliers are flagged on the aggregated per-show durations, then propagated
+   back to the individual tracks that contributed to outlier shows.
+"""
 
 import statistics
 
 from gdtimings import db
-from gdtimings.config import OUTLIER_STD_MULTIPLIER, MIN_SAMPLES_FOR_STATS
+from gdtimings.config import OUTLIER_STD_MULTIPLIER, MIN_SAMPLES_FOR_STATS, UTILITY_SONGS
+
+
+def classify_song_types(conn, verbose=True):
+    """Mark utility songs (Drums, Space, Jam) as song_type='utility'."""
+    updated = 0
+    for name in UTILITY_SONGS:
+        cur = conn.execute(
+            "UPDATE songs SET song_type = 'utility' WHERE canonical_name = ?",
+            (name,),
+        )
+        updated += cur.rowcount
+    conn.commit()
+    if verbose:
+        print(f"  Classified {updated} utility songs")
+    return updated
+
+
+def _per_show_durations(conn):
+    """Return per-show durations for every song, deduped by concert date.
+
+    For each (song_id, concert_date):
+    - MAX(duration_seconds) within each release (handles split songs)
+    - Best release per date via ROW_NUMBER (avoids taper duplication)
+
+    Returns dict: song_id → [(concert_date, duration_seconds), ...]
+    """
+    rows = conn.execute("""
+        SELECT sub.song_id, sub.concert_date, sub.show_dur
+        FROM (
+            SELECT t.song_id, r.concert_date,
+                   MAX(t.duration_seconds) AS show_dur,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY t.song_id, r.concert_date
+                       ORDER BY r.quality_rank DESC
+                   ) AS rn
+            FROM tracks t
+            JOIN releases r ON t.release_id = r.id
+            WHERE t.song_id IS NOT NULL
+              AND t.duration_seconds IS NOT NULL
+              AND r.concert_date IS NOT NULL
+            GROUP BY t.song_id, r.concert_date, r.id
+        ) sub
+        WHERE sub.rn = 1
+        ORDER BY sub.song_id, sub.concert_date
+    """).fetchall()
+
+    result = {}
+    for r in rows:
+        result.setdefault(r["song_id"], []).append(
+            (r["concert_date"], r["show_dur"])
+        )
+    return result
 
 
 def compute_song_stats(conn, verbose=True):
     """Compute duration statistics for all songs and flag outliers.
 
-    For each song with enough samples:
-    - Compute mean, median, std deviation of durations
-    - Track first/last played dates
-    - Flag individual tracks as outliers if > N std devs from mean
+    Uses per-show aggregated durations (one value per concert date) so that
+    split songs and multiple tapers don't skew the results.
     """
-    songs = db.all_songs(conn)
+    show_data = _per_show_durations(conn)
     updated = 0
     outliers_found = 0
 
-    for song in songs:
-        tracks = db.get_tracks_for_song(conn, song["id"])
-        durations = [t["duration_seconds"] for t in tracks if t["duration_seconds"]]
+    for song_id, date_durs in show_data.items():
+        durations = [d for _, d in date_durs]
+        dates = sorted(d for d, _ in date_durs)
+        times_played = len(durations)
+
         if not durations:
             continue
 
-        times_played = len(durations)
-
-        # Get concert dates for first/last played
-        dates = []
-        for t in tracks:
-            release = conn.execute(
-                "SELECT concert_date FROM releases WHERE id = ?", (t["release_id"],)
-            ).fetchone()
-            if release and release["concert_date"]:
-                dates.append(release["concert_date"])
-        dates.sort()
-        first_played = dates[0] if dates else None
-        last_played = dates[-1] if dates else None
+        first_played = dates[0]
+        last_played = dates[-1]
 
         median_dur = statistics.median(durations)
         mean_dur = statistics.mean(durations)
         std_dur = statistics.stdev(durations) if len(durations) >= 2 else 0.0
 
         db.update_song_stats(
-            conn, song["id"],
+            conn, song_id,
             times_played=times_played,
             median_duration=median_dur,
             mean_duration=mean_dur,
@@ -53,16 +101,29 @@ def compute_song_stats(conn, verbose=True):
         )
         updated += 1
 
-        # Flag outliers (need enough samples and non-zero std)
+        # Flag outliers on per-show durations, then propagate to tracks
         if times_played >= MIN_SAMPLES_FOR_STATS and std_dur > 0:
-            for t in tracks:
-                if t["duration_seconds"] is None:
-                    continue
-                deviation = abs(t["duration_seconds"] - mean_dur)
-                is_outlier = 1 if deviation > OUTLIER_STD_MULTIPLIER * std_dur else 0
-                if is_outlier:
-                    outliers_found += 1
-                db.mark_outlier(conn, t["id"], is_outlier)
+            outlier_dates = set()
+            for date, dur in date_durs:
+                deviation = abs(dur - mean_dur)
+                if deviation > OUTLIER_STD_MULTIPLIER * std_dur:
+                    outlier_dates.add(date)
+
+            # Mark all tracks belonging to outlier shows
+            if outlier_dates:
+                tracks = conn.execute(
+                    """SELECT t.id, r.concert_date
+                       FROM tracks t
+                       JOIN releases r ON t.release_id = r.id
+                       WHERE t.song_id = ?
+                         AND t.duration_seconds IS NOT NULL""",
+                    (song_id,),
+                ).fetchall()
+                for t in tracks:
+                    is_outlier = 1 if t["concert_date"] in outlier_dates else 0
+                    if is_outlier:
+                        outliers_found += 1
+                    db.mark_outlier(conn, t["id"], is_outlier)
 
     conn.commit()
 

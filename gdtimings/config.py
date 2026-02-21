@@ -105,6 +105,12 @@ QUALITY_RANKS = {
 FUZZY_AUTO_THRESHOLD = 0.85   # auto-match above this
 FUZZY_FLAG_THRESHOLD = 0.65   # flag for review above this
 
+# ── Song classification ────────────────────────────────────────────────
+# Matched songs that are not real songs (Drums/Space/Jam).  "tuning" and
+# "crowd" already have song_id=NULL (unmatched tracks) so they are excluded
+# by the existing WHERE t.song_id IS NOT NULL clause in queries.
+UTILITY_SONGS = frozenset({"Drums", "Space", "Jam"})
+
 # ── Analysis ───────────────────────────────────────────────────────────
 OUTLIER_STD_MULTIPLIER = 3.0  # flag tracks > N std devs from mean
 MIN_SAMPLES_FOR_STATS = 3     # need at least N tracks to compute stats

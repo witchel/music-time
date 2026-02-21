@@ -15,3 +15,6 @@ viz = [
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
 ]
+dev = [
+    "pytest>=8.0",
+]

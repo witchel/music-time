@@ -10,6 +10,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS songs (
     id              INTEGER PRIMARY KEY,
     canonical_name  TEXT NOT NULL UNIQUE,
+    song_type       TEXT DEFAULT 'song',
     first_played    TEXT,
     last_played     TEXT,
     times_played    INTEGER DEFAULT 0,
@@ -72,13 +73,60 @@ CREATE TABLE IF NOT EXISTS scrape_state (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Deduplicated per-show view: one row per (song, concert_date), using the
+-- best available release (highest quality_rank).  MAX(duration_seconds) within
+-- each release handles split songs (e.g. Dark Star V1/V2).
+-- all_performances keeps every row (for debugging / analysis);
+-- best_performances filters to clean data for visualizations.
+CREATE VIEW IF NOT EXISTS all_performances AS
+SELECT sub.song_id, sub.song, sub.song_type,
+       sub.concert_date, sub.concert_year,
+       sub.concert_month, sub.state, sub.set_name,
+       sub.coverage, sub.is_outlier,
+       sub.max_dur AS duration_seconds,
+       sub.max_dur / 60.0 AS dur_min
+FROM (
+    SELECT t.song_id,
+           s.canonical_name AS song,
+           s.song_type,
+           r.concert_date,
+           r.concert_year,
+           CAST(SUBSTR(r.concert_date, 6, 2) AS INTEGER) AS concert_month,
+           r.state,
+           t.set_name,
+           r.coverage,
+           MAX(t.is_outlier) AS is_outlier,
+           MAX(t.duration_seconds) AS max_dur,
+           ROW_NUMBER() OVER (
+               PARTITION BY t.song_id, r.concert_date
+               ORDER BY r.quality_rank DESC
+           ) AS rn
+    FROM tracks t
+    JOIN songs s ON t.song_id = s.id
+    JOIN releases r ON t.release_id = r.id
+    WHERE t.song_id IS NOT NULL
+      AND t.duration_seconds IS NOT NULL
+      AND r.concert_date IS NOT NULL
+    GROUP BY t.song_id, r.concert_date, r.id
+) sub
+WHERE sub.rn = 1;
+
+CREATE VIEW IF NOT EXISTS best_performances AS
+SELECT song_id, song, concert_date, concert_year, concert_month,
+       state, set_name, duration_seconds, dur_min
+FROM all_performances
+WHERE song_type = 'song'
+  AND coverage IN ('complete', 'unedited')
+  AND is_outlier = 0;
 """
 
 
 def get_connection(db_path=None):
     """Get a SQLite connection, creating the DB and schema if needed."""
     path = db_path or DB_PATH
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if path != ":memory:":
+        os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -253,8 +301,9 @@ def mark_outlier(conn, track_id, is_outlier=1):
 
 def export_tracks(conn):
     return conn.execute(
-        """SELECT s.canonical_name AS song, t.duration_seconds, t.disc_number,
-                  t.track_number, t.set_name, t.writers, t.segue, t.is_outlier,
+        """SELECT s.canonical_name AS song, s.song_type, t.duration_seconds,
+                  t.disc_number, t.track_number, t.set_name, t.writers,
+                  t.segue, t.is_outlier,
                   r.title AS release_title, r.concert_date, r.concert_year,
                   r.concert_month, r.concert_day, r.venue, r.city, r.state,
                   r.coverage, r.source_type, r.taper, r.lineage, r.source_detail

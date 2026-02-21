@@ -262,8 +262,13 @@ def clean_title(raw):
     s = re.sub(r'",?\s*part\s+\d+\s*$', '', s, flags=re.IGNORECASE)
     # Remove set annotations like "[Set 1]" or "(Set 2)"
     s = re.sub(r"\s*[\[\(](?:Set|Disc|Encore)\s*\d*[\]\)]", "", s, flags=re.IGNORECASE)
-    # Strip surrounding quotes
-    s = s.strip('"\'')
+    # Strip surrounding matched quote pairs (but not lone apostrophes like Truckin')
+    if (s.startswith('"') and s.endswith('"')) or \
+       (s.startswith("'") and s.endswith("'") and len(s) > 2):
+        s = s[1:-1]
+    # Strip a lone leading double-quote left after writer-credits stripping
+    elif s.startswith('"') and '"' not in s[1:]:
+        s = s[1:]
     # Strip segment labels for songs split across a show (Category B splits).
     # These are labeled parts of ONE performance (e.g. Dark Star V1/V2) and
     # must resolve to the same canonical song. Do NOT strip "Reprise" — that
@@ -314,18 +319,12 @@ def normalize_song(conn, raw_title):
     matches = difflib.get_close_matches(lower, [n.lower() for n in _CANONICAL_NAMES],
                                          n=1, cutoff=FUZZY_FLAG_THRESHOLD)
     if matches:
-        # Find the original-cased canonical name
         matched_lower = matches[0]
         canonical = _ALIAS_MAP[matched_lower]
         ratio = difflib.SequenceMatcher(None, lower, matched_lower).ratio()
-        if ratio >= FUZZY_AUTO_THRESHOLD:
-            song_id = db.get_or_create_song(conn, canonical)
-            db.add_alias(conn, lower, song_id, "auto_fuzzy")
-            return song_id, canonical, "fuzzy"
-        # Below auto threshold but above flag threshold — still create
-        # but mark as needing review
+        alias_type = "auto_fuzzy" if ratio >= FUZZY_AUTO_THRESHOLD else "fuzzy_flagged"
         song_id = db.get_or_create_song(conn, canonical)
-        db.add_alias(conn, lower, song_id, "auto_fuzzy")
+        db.add_alias(conn, lower, song_id, alias_type)
         return song_id, canonical, "fuzzy"
 
     # 5. No match — create new song entry

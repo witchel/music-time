@@ -19,9 +19,6 @@ from gdtimings.location import US_STATE_ABBREV
 # ── Config ────────────────────────────────────────────────────────────────
 OUTPUT_DIR = Path(__file__).parent / "output"
 
-# Utility tracks to exclude from ranked song lists
-SKIP_SONGS = {"tuning", "Drums", "Space", "crowd"}
-
 # ── Region mappings ───────────────────────────────────────────────────────
 STATE_REGION = {
     "AL": "South", "AK": "West", "AZ": "West", "AR": "South",
@@ -160,8 +157,6 @@ def plot_heatmap(conn):
     song_counts = {}
     for r in rows:
         song_counts[r["song"]] = song_counts.get(r["song"], 0) + r["n"]
-    for skip in SKIP_SONGS:
-        song_counts.pop(skip, None)
     top_songs = sorted(song_counts, key=song_counts.get, reverse=True)[:30]
 
     years = sorted(set(r["year"] for r in rows))
@@ -261,12 +256,10 @@ def plot_streamgraph(conn):
         GROUP BY song, concert_year
     """).fetchall()
 
-    # Find top 10 songs by total time (excluding utility tracks)
+    # Find top 10 songs by total time (utility tracks filtered by view)
     song_totals = {}
     for r in rows:
         song_totals[r["song"]] = song_totals.get(r["song"], 0) + r["total_hours"]
-    for skip in SKIP_SONGS:
-        song_totals.pop(skip, None)
     top10 = sorted(song_totals, key=song_totals.get, reverse=True)[:10]
 
     years = sorted(set(r["year"] for r in rows))
@@ -384,12 +377,10 @@ def plot_small_multiples(conn):
         GROUP BY song, concert_year
     """).fetchall()
 
-    # Top 20 songs by performance count (excluding utility tracks)
+    # Top 20 songs by performance count (utility tracks filtered by view)
     song_counts = {}
     for r in rows:
         song_counts[r["song"]] = song_counts.get(r["song"], 0) + r["n"]
-    for skip in SKIP_SONGS:
-        song_counts.pop(skip, None)
     top20 = sorted(song_counts, key=song_counts.get, reverse=True)[:20]
 
     years = sorted(set(r["year"] for r in rows))
@@ -450,11 +441,10 @@ def plot_duration_variability(conn):
         key = (r["song"], r["year"])
         groups.setdefault(key, []).append(r["dur_min"])
 
-    # Top 30 songs by total performances (excluding utility tracks)
+    # Top 30 songs by total performances (utility tracks filtered by view)
     song_total = {}
     for (song, _), vals in groups.items():
-        if song not in SKIP_SONGS:
-            song_total[song] = song_total.get(song, 0) + len(vals)
+        song_total[song] = song_total.get(song, 0) + len(vals)
     top30 = set(sorted(song_total, key=song_total.get, reverse=True)[:30])
 
     medians, stds, years_c, sizes = [], [], [], []

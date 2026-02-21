@@ -1,11 +1,9 @@
-"""Generate 8 example visualizations from the gdtimings SQLite database.
+"""Generate example visualizations from the gdtimings SQLite database.
 
 Usage:
     uv run --extra viz python -m viz.examples
 """
 
-import os
-import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,11 +13,14 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 
+from gdtimings.db import get_connection
 from gdtimings.location import US_STATE_ABBREV
 
 # ── Config ────────────────────────────────────────────────────────────────
-DB_PATH = os.path.expanduser("~/.gdtimings/gdtimings.db")
 OUTPUT_DIR = Path(__file__).parent / "output"
+
+# Utility tracks to exclude from ranked song lists
+SKIP_SONGS = {"tuning", "Drums", "Space", "crowd"}
 
 # ── Region mappings ───────────────────────────────────────────────────────
 STATE_REGION = {
@@ -90,9 +91,7 @@ def to_abbr(state_name):
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return get_connection()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -100,24 +99,10 @@ def get_conn():
 # ══════════════════════════════════════════════════════════════════════════
 def plot_terrain(conn):
     rows = conn.execute("""
-        SELECT sub.concert_date, sub.max_dur / 60.0 AS dur_min, sub.state
-        FROM (
-            SELECT r.concert_date, r.state,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE s.canonical_name = 'Dark Star'
-              AND t.duration_seconds IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        ORDER BY sub.concert_date
+        SELECT concert_date, dur_min, state
+        FROM best_performances
+        WHERE song = 'Dark Star'
+        ORDER BY concert_date
     """).fetchall()
 
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -163,34 +148,19 @@ def plot_terrain(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_heatmap(conn):
     rows = conn.execute("""
-        SELECT sub.song, sub.year,
-               AVG(sub.max_dur) / 60.0 AS avg_min,
+        SELECT song, concert_year AS year,
+               AVG(dur_min) AS avg_min,
                COUNT(*) AS n
-        FROM (
-            SELECT s.canonical_name AS song, r.concert_year AS year,
-                   r.concert_date, MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY s.canonical_name, r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE t.duration_seconds IS NOT NULL
-              AND r.concert_year IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY s.canonical_name, r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        GROUP BY sub.song, sub.year
+        FROM best_performances
+        WHERE concert_year IS NOT NULL
+        GROUP BY song, concert_year
     """).fetchall()
 
     # Find top 30 songs by total performances
     song_counts = {}
     for r in rows:
         song_counts[r["song"]] = song_counts.get(r["song"], 0) + r["n"]
-    # Exclude utility tracks
-    for skip in ("tuning", "Drums", "Space", "crowd"):
+    for skip in SKIP_SONGS:
         song_counts.pop(skip, None)
     top_songs = sorted(song_counts, key=song_counts.get, reverse=True)[:30]
 
@@ -224,25 +194,11 @@ def plot_heatmap(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_polar(conn):
     rows = conn.execute("""
-        SELECT sub.concert_date, sub.max_dur / 60.0 AS dur_min, sub.sn
-        FROM (
-            SELECT r.concert_date,
-                   COALESCE(LOWER(t.set_name), 'unknown') AS sn,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE s.canonical_name = 'Dark Star'
-              AND t.duration_seconds IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        ORDER BY sub.concert_date
+        SELECT concert_date, dur_min,
+               COALESCE(LOWER(set_name), 'unknown') AS sn
+        FROM best_performances
+        WHERE song = 'Dark Star'
+        ORDER BY concert_date
     """).fetchall()
 
     # Map date to angle: full career 1965-1995 → 0 to 2π
@@ -298,32 +254,18 @@ def plot_polar(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_streamgraph(conn):
     rows = conn.execute("""
-        SELECT sub.song, sub.year,
-               SUM(sub.max_dur) / 3600.0 AS total_hours
-        FROM (
-            SELECT s.canonical_name AS song, r.concert_year AS year,
-                   r.concert_date, MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY s.canonical_name, r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE t.duration_seconds IS NOT NULL
-              AND r.concert_year IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY s.canonical_name, r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        GROUP BY sub.song, sub.year
+        SELECT song, concert_year AS year,
+               SUM(duration_seconds) / 3600.0 AS total_hours
+        FROM best_performances
+        WHERE concert_year IS NOT NULL
+        GROUP BY song, concert_year
     """).fetchall()
 
     # Find top 10 songs by total time (excluding utility tracks)
     song_totals = {}
     for r in rows:
         song_totals[r["song"]] = song_totals.get(r["song"], 0) + r["total_hours"]
-    for skip in ("tuning", "crowd"):
+    for skip in SKIP_SONGS:
         song_totals.pop(skip, None)
     top10 = sorted(song_totals, key=song_totals.get, reverse=True)[:10]
 
@@ -371,25 +313,10 @@ def plot_streamgraph(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_geographic(conn):
     rows = conn.execute("""
-        SELECT sub.state, AVG(sub.max_dur) / 60.0 AS avg_min,
-               COUNT(*) AS n
-        FROM (
-            SELECT r.state, r.concert_date,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE s.canonical_name = 'Dark Star'
-              AND t.duration_seconds IS NOT NULL
-              AND r.state IS NOT NULL
-            GROUP BY r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        GROUP BY sub.state
+        SELECT state, AVG(dur_min) AS avg_min, COUNT(*) AS n
+        FROM best_performances
+        WHERE song = 'Dark Star' AND state IS NOT NULL
+        GROUP BY state
     """).fetchall()
 
     state_data = {}
@@ -449,33 +376,19 @@ def plot_geographic(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_small_multiples(conn):
     rows = conn.execute("""
-        SELECT sub.song, sub.year,
-               AVG(sub.max_dur) / 60.0 AS avg_min,
+        SELECT song, concert_year AS year,
+               AVG(dur_min) AS avg_min,
                COUNT(*) AS n
-        FROM (
-            SELECT s.canonical_name AS song, r.concert_year AS year,
-                   r.concert_date, MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY s.canonical_name, r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE t.duration_seconds IS NOT NULL
-              AND r.concert_year IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY s.canonical_name, r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        GROUP BY sub.song, sub.year
+        FROM best_performances
+        WHERE concert_year IS NOT NULL
+        GROUP BY song, concert_year
     """).fetchall()
 
     # Top 20 songs by performance count (excluding utility tracks)
     song_counts = {}
     for r in rows:
         song_counts[r["song"]] = song_counts.get(r["song"], 0) + r["n"]
-    for skip in ("tuning", "Drums", "Space", "crowd"):
+    for skip in SKIP_SONGS:
         song_counts.pop(skip, None)
     top20 = sorted(song_counts, key=song_counts.get, reverse=True)[:20]
 
@@ -526,25 +439,9 @@ def plot_small_multiples(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_duration_variability(conn):
     rows = conn.execute("""
-        SELECT sub.song, sub.year,
-               sub.max_dur / 60.0 AS dur_min
-        FROM (
-            SELECT s.canonical_name AS song, r.concert_year AS year,
-                   r.concert_date,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY s.canonical_name, r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE t.duration_seconds IS NOT NULL
-              AND r.concert_year IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY s.canonical_name, r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
+        SELECT song, concert_year AS year, dur_min
+        FROM best_performances
+        WHERE concert_year IS NOT NULL
     """).fetchall()
 
     # Group by (song, year)
@@ -553,12 +450,10 @@ def plot_duration_variability(conn):
         key = (r["song"], r["year"])
         groups.setdefault(key, []).append(r["dur_min"])
 
-    # Filter: need 3+ performances in a year, exclude utility tracks
-    skip = {"tuning", "Drums", "Space", "crowd"}
-    # Top 30 songs by total performances
+    # Top 30 songs by total performances (excluding utility tracks)
     song_total = {}
     for (song, _), vals in groups.items():
-        if song not in skip:
+        if song not in SKIP_SONGS:
             song_total[song] = song_total.get(song, 0) + len(vals)
     top30 = set(sorted(song_total, key=song_total.get, reverse=True)[:30])
 
@@ -589,24 +484,10 @@ def plot_duration_variability(conn):
 # ══════════════════════════════════════════════════════════════════════════
 def plot_envelope(conn):
     rows = conn.execute("""
-        SELECT sub.concert_date, sub.max_dur / 60.0 AS dur_min
-        FROM (
-            SELECT r.concert_date,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE s.canonical_name = 'Playing in the Band'
-              AND t.duration_seconds IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        ORDER BY sub.concert_date
+        SELECT concert_date, dur_min
+        FROM best_performances
+        WHERE song = 'Playing in the Band'
+        ORDER BY concert_date
     """).fetchall()
 
     dates = [r["concert_date"] for r in rows]
@@ -774,24 +655,26 @@ _STRIP_SEASONS = {
 _SEASON_LABELS = ["Spring", "Summer", "Fall/Winter"]
 
 
-def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=1.8,
-                  max_strip_height=4.5, season_gap=1.8, year_gap=1.0,
-                  hiatus_gap=4.0, min_size=0.3, max_size=2.0, seed=42):
-    """Compute tile positions for a year-strip layout.
+def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=2.5,
+                  max_strip_height=5.5, year_gap=-0.3,
+                  hiatus_gap=2.5, min_size=0.2, max_size=3.5, seed=42):
+    """Compute tile positions for a dense year-strip layout.
+
+    Tiles are placed center-out: longest performances at the center of
+    each strip, progressively shorter ones toward the edges.  This makes
+    the epic jams visually dominant.
 
     Parameters
     ----------
     year_data : dict[int, list[dict]]
-        {year: [{"dur_min": float, "month": int, "date": str}, ...]},
-        each list already sorted by date.
+        {year: [{"dur_min": float, "month": int, "date": str}, ...]}.
 
     Returns
     -------
     tiles : list[dict]
         Per-tile dict with keys: cx, cy, size, rotation, dur_min, date, year.
     strip_bounds : dict[int, dict]
-        {year: {"y_center", "height", "x_left", "x_right",
-                "blocks": [(x_start, x_end, label), ...]}}.
+        {year: {"y_center", "height", "x_left", "x_right"}}.
     fig_bounds : tuple (x_min, x_max, y_min, y_max).
     """
     rng = np.random.default_rng(seed)
@@ -826,82 +709,58 @@ def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=1.8,
 
         y_center = y_cursor - strip_h / 2
 
-        # Group performances into season blocks
-        blocks = defaultdict(list)  # block_idx → list of perfs
-        for p in perfs:
-            bidx, _ = _STRIP_SEASONS[p["month"]]
-            blocks[bidx].append(p)
+        # Sort by duration descending → center-out placement
+        sorted_perfs = sorted(perfs, key=lambda p: p["dur_min"], reverse=True)
+        total_dur = sum(p["dur_min"] for p in sorted_perfs) or 1
 
-        # Block widths proportional to duration share
-        block_durs = {}
-        for bidx, bperfs in blocks.items():
-            block_durs[bidx] = sum(p["dur_min"] for p in bperfs)
-        total_block_dur = sum(block_durs.values()) or 1
+        # Build center-out ordering: longest at center, then alternate R/L
+        center_list = []
+        right_list = []
+        left_list = []
+        for i, p in enumerate(sorted_perfs):
+            if i == 0:
+                center_list.append(p)
+            elif i % 2 == 1:
+                right_list.append(p)
+            else:
+                left_list.append(p)
+        ordered = list(reversed(left_list)) + center_list + right_list
 
-        active_blocks = sorted(blocks.keys())
-        n_gaps = max(0, len(active_blocks) - 1)
-        usable_w = strip_w - n_gaps * season_gap
+        # Place tiles L→R within strip, each getting width ∝ duration
+        total_w = strip_w
+        x_start = -total_w / 2
+        x_pos = x_start
+        for p in ordered:
+            frac = p["dur_min"] / total_dur
+            tile_w = frac * total_w
+            cx = x_pos + tile_w / 2
+            cy = y_center + rng.uniform(-strip_h * 0.3, strip_h * 0.3)
 
-        block_widths = {}
-        for bidx in active_blocks:
-            block_widths[bidx] = (block_durs[bidx] / total_block_dur) * usable_w
+            size = min_size + np.sqrt(p["dur_min"] / max_dur) * (max_size - min_size)
+            rotation = rng.uniform(0, 2 * np.pi)
 
-        # Compute block x-ranges, centered on x=0
-        total_used = sum(block_widths.values()) + n_gaps * season_gap
-        x_start = -total_used / 2
-
-        block_ranges = {}
-        strip_block_info = []
-        cursor = x_start
-        for i, bidx in enumerate(active_blocks):
-            bw = block_widths[bidx]
-            block_ranges[bidx] = (cursor, cursor + bw)
-            strip_block_info.append((cursor, cursor + bw, _SEASON_LABELS[bidx]))
-            cursor += bw
-            if i < len(active_blocks) - 1:
-                cursor += season_gap
-
-        # Place tiles within each block, L→R chronologically
-        for bidx in active_blocks:
-            bperfs = blocks[bidx]
-            bx0, bx1 = block_ranges[bidx]
-            bw = bx1 - bx0
-            total_bdur = sum(p["dur_min"] for p in bperfs) or 1
-
-            # Each tile gets x-space proportional to its duration
-            x_pos = bx0
-            for p in bperfs:
-                frac = p["dur_min"] / total_bdur
-                tile_w = frac * bw
-                cx = x_pos + tile_w / 2
-                cy = y_center + rng.uniform(-strip_h * 0.25, strip_h * 0.25)
-
-                size = min_size + np.sqrt(p["dur_min"] / max_dur) * (max_size - min_size)
-                rotation = rng.uniform(0, 2 * np.pi)
-
-                tiles.append({
-                    "cx": cx, "cy": cy, "size": size, "rotation": rotation,
-                    "dur_min": p["dur_min"], "date": p["date"],
-                    "year": yr, "month": p["month"],
-                })
-                x_pos += tile_w
+            tiles.append({
+                "cx": cx, "cy": cy, "size": size, "rotation": rotation,
+                "dur_min": p["dur_min"], "date": p["date"],
+                "year": yr, "month": p["month"],
+            })
+            x_pos += tile_w
 
         strip_bounds[yr] = {
             "y_center": y_center, "height": strip_h,
-            "x_left": -total_used / 2, "x_right": total_used / 2,
-            "blocks": strip_block_info,
+            "x_left": -total_w / 2, "x_right": total_w / 2,
         }
 
         y_cursor -= strip_h + year_gap
 
-        # Double gap for 1974→1976 hiatus
+        # Modest gap for 1974→1976 hiatus
         if yr == 1974:
             y_cursor -= hiatus_gap
 
-    x_min = min(sb["x_left"] for sb in strip_bounds.values()) - 4
-    x_max = max(sb["x_right"] for sb in strip_bounds.values()) + 4
-    y_min = y_cursor - 2
-    y_max = 2
+    x_min = min(sb["x_left"] for sb in strip_bounds.values()) - 2
+    x_max = max(sb["x_right"] for sb in strip_bounds.values()) + 2
+    y_min = y_cursor - 1
+    y_max = 1
 
     return tiles, strip_bounds, (x_min, x_max, y_min, y_max)
 
@@ -957,29 +816,12 @@ def _catmull_rom_chain(points, num_interp=8):
 
 def _query_pitb_with_month(conn):
     """Query PITB performances with concert_month included."""
-    rows = conn.execute("""
-        SELECT sub.concert_date, sub.concert_year, sub.concert_month,
-               sub.max_dur / 60.0 AS dur_min
-        FROM (
-            SELECT r.concert_date, r.concert_year,
-                   CAST(SUBSTR(r.concert_date, 6, 2) AS INTEGER) AS concert_month,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE s.canonical_name = 'Playing in the Band'
-              AND t.duration_seconds IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        ORDER BY sub.concert_date
+    return conn.execute("""
+        SELECT concert_date, concert_year, concert_month, dur_min
+        FROM best_performances
+        WHERE song = 'Playing in the Band'
+        ORDER BY concert_date
     """).fetchall()
-    return rows
 
 
 def _build_year_data(rows):
@@ -1087,34 +929,13 @@ def plot_hilbert(conn):
 # 10. Gosper Rings — concentric year-rings, season sectors, tile area ∝ duration
 # ══════════════════════════════════════════════════════════════════════════
 def plot_gosper_flow(conn):
-    """Gosper curve tiles on radial time-sweep layout.
-
-    Time sweeps clockwise from 12 o'clock.  Each tile's angular arc is
-    proportional to its duration in minutes.  6 o'clock ≈ 1978 (the
-    cumulative-minutes midpoint).  Tiles packed into concentric lanes
-    to create a continuous visual mass.
-    """
+    """Gosper curve tiles on sunflower spiral layout."""
 
     rows = conn.execute("""
-        SELECT sub.concert_date, sub.concert_year,
-               sub.max_dur / 60.0 AS dur_min
-        FROM (
-            SELECT r.concert_date, r.concert_year,
-                   MAX(t.duration_seconds) AS max_dur,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY r.concert_date
-                       ORDER BY r.quality_rank DESC
-                   ) AS rn
-            FROM tracks t
-            JOIN songs s ON t.song_id = s.id
-            JOIN releases r ON t.release_id = r.id
-            WHERE s.canonical_name = 'Playing in the Band'
-              AND t.duration_seconds IS NOT NULL
-              AND r.concert_date IS NOT NULL
-            GROUP BY r.concert_date, r.id
-        ) sub
-        WHERE sub.rn = 1
-        ORDER BY sub.concert_date
+        SELECT concert_date, concert_year, dur_min
+        FROM best_performances
+        WHERE song = 'Playing in the Band'
+        ORDER BY concert_date
     """).fetchall()
 
     durs = np.array([r["dur_min"] for r in rows])
@@ -1221,48 +1042,26 @@ def plot_gosper_flow(conn):
 # ══════════════════════════════════════════════════════════════════════════
 
 def _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years):
-    """Draw strip backgrounds, year labels, season labels, and hiatus marker."""
-    # Strip background rects
-    for yr, sb in strip_bounds.items():
-        rect = plt.Rectangle(
-            (sb["x_left"] - 0.5, sb["y_center"] - sb["height"] / 2),
-            sb["x_right"] - sb["x_left"] + 1.0, sb["height"],
-            facecolor="#252545", alpha=0.3, edgecolor="none", zorder=0,
-        )
-        ax.add_patch(rect)
+    """Draw year labels (every 5 years) and hiatus marker."""
+    x_label = fig_bounds[0] + 1.0
 
-    # Year labels at left margin
-    x_label = fig_bounds[0] + 1.5
     for yr, sb in strip_bounds.items():
-        ax.text(x_label, sb["y_center"], str(yr),
-                color="white", fontsize=9, fontweight="bold",
-                ha="right", va="center", zorder=5)
+        if yr % 5 == 0:
+            ax.text(x_label, sb["y_center"], str(yr),
+                    color="#aaaacc", fontsize=10, fontweight="bold",
+                    ha="right", va="center", zorder=5)
 
-    # 1975 hiatus label
     if 1974 in strip_bounds and 1976 in strip_bounds:
         y_1974 = strip_bounds[1974]["y_center"] - strip_bounds[1974]["height"] / 2
         y_1976 = strip_bounds[1976]["y_center"] + strip_bounds[1976]["height"] / 2
         y_hiatus = (y_1974 + y_1976) / 2
-        ax.text(x_label, y_hiatus, "1975",
-                color="#666688", fontsize=8, fontstyle="italic",
+        ax.text(x_label, y_hiatus, "'75",
+                color="#555577", fontsize=8, fontstyle="italic",
                 ha="right", va="center", zorder=5)
-        ax.text(x_label + 2.5, y_hiatus, "— hiatus",
-                color="#666688", fontsize=7, fontstyle="italic",
-                ha="left", va="center", zorder=5)
-
-    # Season labels above the topmost strip
-    first_yr = all_years[0] if all_years else None
-    if first_yr and first_yr in strip_bounds:
-        sb = strip_bounds[first_yr]
-        y_top = sb["y_center"] + sb["height"] / 2 + 1.2
-        for x0, x1, label in sb["blocks"]:
-            ax.text((x0 + x1) / 2, y_top, label,
-                    color="#aaaacc", fontsize=8, ha="center", va="bottom",
-                    zorder=5)
 
 
 def plot_hilbert_strip(conn):
-    """Year-strip layout with Hilbert curve tiles for PITB."""
+    """Dense year-strip layout with Hilbert tiles — longest jams at center."""
     rows = _query_pitb_with_month(conn)
     year_data = _build_year_data(rows)
     tiles, strip_bounds, fig_bounds = _strip_layout(year_data)
@@ -1286,19 +1085,6 @@ def plot_hilbert_strip(conn):
 
     all_years = sorted(year_data.keys())
     _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
-
-    # Draw Catmull-Rom splines per year (connecting thread)
-    year_tiles = defaultdict(list)
-    for t in tiles:
-        year_tiles[t["year"]].append(t)
-    for yr in all_years:
-        yt = year_tiles.get(yr, [])
-        if len(yt) < 2:
-            continue
-        pts = np.array([[t["cx"], t["cy"]] for t in yt])
-        smooth = _catmull_rom_chain(pts, num_interp=8)
-        ax.plot(smooth[:, 0], smooth[:, 1], color="white", alpha=0.15,
-                linewidth=0.4, zorder=0.5)
 
     # Draw tiles — smallest first
     draw_order = sorted(range(len(tiles)), key=lambda i: tiles[i]["dur_min"])
@@ -1347,7 +1133,7 @@ def plot_hilbert_strip(conn):
 
     ax.set_title("Playing in the Band — Hilbert Year Strips\n"
                  "tile area & complexity ∝ duration  ·  "
-                 "chronological L→R  ·  season gaps",
+                 "longest jams at center",
                  fontsize=15, pad=14, color="white")
 
     cax = fig.add_axes([0.20, 0.96, 0.60, 0.008])
@@ -1370,7 +1156,7 @@ def plot_hilbert_strip(conn):
 # ══════════════════════════════════════════════════════════════════════════
 
 def plot_gosper_strip(conn):
-    """Year-strip layout with Gosper curve tiles for PITB."""
+    """Dense year-strip layout with Gosper tiles — longest jams at center."""
     rows = _query_pitb_with_month(conn)
     year_data = _build_year_data(rows)
     tiles, strip_bounds, fig_bounds = _strip_layout(year_data)
@@ -1404,19 +1190,6 @@ def plot_gosper_strip(conn):
 
     all_years = sorted(year_data.keys())
     _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
-
-    # Draw Catmull-Rom splines per year
-    year_tiles = defaultdict(list)
-    for t in tiles:
-        year_tiles[t["year"]].append(t)
-    for yr in all_years:
-        yt = year_tiles.get(yr, [])
-        if len(yt) < 2:
-            continue
-        pts = np.array([[t["cx"], t["cy"]] for t in yt])
-        smooth = _catmull_rom_chain(pts, num_interp=8)
-        ax.plot(smooth[:, 0], smooth[:, 1], color="white", alpha=0.15,
-                linewidth=0.4, zorder=0.5)
 
     # Draw tiles — smallest first
     draw_order = sorted(range(len(tiles)), key=lambda i: tiles[i]["dur_min"])
@@ -1458,7 +1231,7 @@ def plot_gosper_strip(conn):
 
     ax.set_title("Playing in the Band — Gosper Year Strips\n"
                  "tile area & complexity ∝ duration  ·  "
-                 "chronological L→R  ·  season gaps",
+                 "longest jams at center",
                  fontsize=15, pad=14, color="white")
 
     cax = fig.add_axes([0.20, 0.96, 0.60, 0.008])

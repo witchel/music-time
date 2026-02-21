@@ -766,12 +766,12 @@ def plot_hilbert_duration(conn):
 
     # ── Sunflower spiral layout — wide size range for clear area contrast ──
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, spacing=1.6)
+        durs, min_size=0.12, max_size=4.0, spacing=2.0)
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
 
-    fig, ax = plt.subplots(figsize=(22, 22))
+    fig, ax = plt.subplots(figsize=(30, 30))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
@@ -826,7 +826,7 @@ def plot_hilbert_duration(conn):
                     labelcolor="white")
     leg.get_frame().set_linewidth(0.5)
 
-    fig.savefig(OUTPUT_DIR / "06_hilbert_duration_sunflower.png", dpi=200,
+    fig.savefig(OUTPUT_DIR / "06_hilbert_duration_sunflower.png", dpi=250,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
     print("  06_hilbert_duration_sunflower.png")
@@ -874,7 +874,7 @@ def plot_gosper_duration(conn):
 
     # ── Sunflower spiral layout — wide size range for clear area contrast ──
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, spacing=1.6)
+        durs, min_size=0.12, max_size=4.0, spacing=2.0)
 
     # Gosper curves don't fill their bounding box as densely as Hilbert,
     # so scale up by ~30% for visual equivalence.
@@ -883,7 +883,7 @@ def plot_gosper_duration(conn):
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_perfs)
 
-    fig, ax = plt.subplots(figsize=(22, 22))
+    fig, ax = plt.subplots(figsize=(30, 30))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
@@ -932,7 +932,7 @@ def plot_gosper_duration(conn):
                     labelcolor="white")
     leg.get_frame().set_linewidth(0.5)
 
-    fig.savefig(OUTPUT_DIR / "07_gosper_duration_sunflower.png", dpi=200,
+    fig.savefig(OUTPUT_DIR / "07_gosper_duration_sunflower.png", dpi=250,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
     print("  07_gosper_duration_sunflower.png")

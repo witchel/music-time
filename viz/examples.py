@@ -406,7 +406,7 @@ def plot_hilbert(conn):
 
     # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
-    lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
+    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
 
     for idx in draw_order:
         size = tile_sizes[idx]
@@ -514,7 +514,7 @@ def plot_gosper_flow(conn):
     # ── Draw ──
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
+    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
 
     fig, ax = plt.subplots(figsize=(22, 22))
     fig.set_facecolor("#1a1a2e")
@@ -589,7 +589,7 @@ def plot_hilbert_strip(conn):
     # Color mapping
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
+    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
 
     fig, ax = plt.subplots(figsize=(24, 30))
     fig.set_facecolor("#1a1a2e")
@@ -694,7 +694,7 @@ def plot_gosper_strip(conn):
     # Color mapping
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
+    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
 
     fig, ax = plt.subplots(figsize=(24, 30))
     fig.set_facecolor("#1a1a2e")
@@ -785,7 +785,7 @@ def plot_hilbert_duration(conn):
     # ── Quartile bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
-    lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
+    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
     base_size = 2.0  # bin 3 (short) gets this; bin 0 (epic) gets 2× = 4.0
     tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
 
@@ -909,7 +909,7 @@ def plot_gosper_duration(conn):
     # ── Quartile bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
-    lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
+    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
     # Gosper curves are sparser than Hilbert, so 1.3× base size
     base_size = 2.0 * 1.3
     tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
@@ -987,6 +987,351 @@ def plot_gosper_duration(conn):
     print("  07_gosper_duration_sunflower.png")
 
 
+# ── Era definitions for PITB segmented sunflowers ────────────────────────
+PITB_ERAS = [
+    ("Genesis",     1970, 1971),
+    ("Peak Jams",   1972, 1974),
+    ("Post-Hiatus", 1976, 1979),
+    ("Transition",  1980, 1984),
+    ("Stadium",     1985, 1989),
+    ("Late Era",    1990, 1995),
+]
+
+
+def _assign_eras(rows):
+    """Assign each row to a PITB era, returning list of (era_index, row) pairs.
+
+    Rows whose concert_year doesn't fall into any era are dropped (e.g. 1975).
+    """
+    assigned = []
+    for r in rows:
+        yr = r["concert_year"]
+        for ei, (_, y0, y1) in enumerate(PITB_ERAS):
+            if y0 <= yr <= y1:
+                assigned.append((ei, r))
+                break
+    return assigned
+
+
+def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
+                      gap_deg=1.5):
+    """Compute tile positions for era-segmented sunflower.
+
+    Parameters
+    ----------
+    assigned : list of (era_index, row)
+        Pre-sorted by era, then by duration ascending within each era.
+    base_size : float
+        Tile size for bin 3 (short).
+    size_ratios : array
+        Per-bin size multiplier.
+    bins : array
+        Bin index per tile (parallel to assigned).
+    k : float
+        Packing factor.
+    gap_deg : float
+        Angular gap between eras in degrees.
+
+    Returns
+    -------
+    tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries
+    """
+    n = len(assigned)
+    tile_sizes = base_size * size_ratios[bins]
+    tile_cx = np.empty(n)
+    tile_cy = np.empty(n)
+
+    # Count tiles per era
+    era_counts = [0] * len(PITB_ERAS)
+    for ei, _ in assigned:
+        era_counts[ei] += 1
+
+    total_count = sum(era_counts)
+    total_gap = len([c for c in era_counts if c > 0]) * gap_deg
+    usable_deg = 360.0 - total_gap
+
+    # Compute angular wedges (start from 12 o'clock = -π/2, going clockwise)
+    gap_rad = np.radians(gap_deg)
+    era_boundaries = []  # (start_angle, end_angle, era_name)
+    angle_cursor = -np.pi / 2
+    for ei, (name, _, _) in enumerate(PITB_ERAS):
+        if era_counts[ei] == 0:
+            continue
+        wedge_deg = usable_deg * era_counts[ei] / total_count
+        wedge_rad = np.radians(wedge_deg)
+        era_start = angle_cursor + gap_rad / 2
+        era_end = era_start + wedge_rad
+        era_boundaries.append((era_start, era_end, name, ei))
+        angle_cursor = era_end + gap_rad / 2
+
+    # Build lookup: era_index → (start, width)
+    era_wedge = {}
+    for (start, end, _, ei) in era_boundaries:
+        era_wedge[ei] = (start, end - start)
+
+    # Place tiles per era using golden-angle within the wedge
+    golden_angle = np.pi * (3 - np.sqrt(5))
+    # Track cumulative area per era for radius computation
+    era_cumul = [0.0] * len(PITB_ERAS)
+    era_tile_idx = [0] * len(PITB_ERAS)  # count within era
+
+    for i, (ei, _) in enumerate(assigned):
+        size = tile_sizes[i]
+        era_cumul[ei] += size ** 2
+        r = k * np.sqrt(era_cumul[ei])
+
+        j = era_tile_idx[ei]
+        era_start, era_width = era_wedge[ei]
+        # Golden angle mapped into the wedge
+        frac = (j * golden_angle / (2 * np.pi)) % 1.0
+        theta = era_start + frac * era_width
+
+        tile_cx[i] = r * np.cos(theta)
+        tile_cy[i] = r * np.sin(theta)
+        era_tile_idx[ei] += 1
+
+    r_outer = k * np.sqrt(max(era_cumul)) + tile_sizes.max()
+
+    return tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries
+
+
+def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer, pad=3.5):
+    """Draw radial spokes at era boundaries and era labels."""
+    r_spoke = r_outer + pad * 0.3
+
+    for start, end, name, _ in era_boundaries:
+        # Spoke at start of each wedge
+        ax.plot([0, r_spoke * np.cos(start)],
+                [0, r_spoke * np.sin(start)],
+                color="#555577", linewidth=1.5, alpha=0.7, zorder=0.5)
+
+        # Label at middle of wedge, 70% of outer radius
+        mid_angle = (start + end) / 2
+        label_r = r_outer * 0.72
+        lx = label_r * np.cos(mid_angle)
+        ly = label_r * np.sin(mid_angle)
+
+        # Rotate text to follow the angle, keeping it readable
+        text_angle = np.degrees(mid_angle)
+        # Flip text that would be upside-down
+        if -270 < text_angle < -90 or 90 < text_angle < 270:
+            text_angle += 180
+        ax.text(lx, ly, name, color="white", fontsize=10, fontweight="bold",
+                ha="center", va="center", rotation=text_angle,
+                alpha=0.85, zorder=10,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="#1a1a2e",
+                          edgecolor="none", alpha=0.7))
+
+    # Closing spoke (end of last era)
+    if era_boundaries:
+        last_end = era_boundaries[-1][1]
+        ax.plot([0, r_spoke * np.cos(last_end)],
+                [0, r_spoke * np.sin(last_end)],
+                color="#555577", linewidth=1.5, alpha=0.7, zorder=0.5)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 8. Hilbert Duration Era Sunflower — Playing in the Band
+# ══════════════════════════════════════════════════════════════════════════
+
+def plot_hilbert_duration_era(conn):
+    """Hilbert sunflower segmented by era wedges, duration-sorted within each."""
+    rows = _query_pitb_with_month(conn)
+
+    # Assign eras and sort: by era, then by duration ascending within each
+    assigned = _assign_eras(rows)
+    assigned.sort(key=lambda x: (x[0], x[1]["dur_min"]))
+
+    durs = np.array([r["dur_min"] for (_, r) in assigned])
+    n_tiles = len(assigned)
+    max_dur = durs.max()
+    rng = np.random.default_rng(42)
+
+    # Pre-compute Hilbert curves at multiple orders
+    h_orders = [2, 3, 4, 5]
+    curves = {o: _hilbert_points(o) for o in h_orders}
+    grids = {o: 2 ** o for o in h_orders}
+
+    # Quartile bins → curve order + color + discrete size
+    bins = _duration_bins(durs)
+    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
+    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
+    base_size = 2.0
+
+    # Era-wedge layout
+    tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
+        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.7)
+
+    # Random rotation per tile
+    tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
+
+    fig, ax = plt.subplots(figsize=(30, 30))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    # Draw era spokes and labels
+    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer)
+
+    # Draw smallest tiles first so the epic jams render on top
+    draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
+
+    for idx in draw_order:
+        size = tile_sizes[idx]
+        cx, cy = tile_cx[idx], tile_cy[idx]
+        rot = tile_rots[idx]
+
+        bini = bins[idx]
+        color = BIN_COLORS[bini]
+        order = bin_to_order[bini]
+        pts = curves[order]
+        grid_n = grids[order]
+
+        margin = 0.04 * size
+        span = size - 2 * margin
+        denom = max(grid_n - 1, 1)
+
+        # Build local coordinates centered on origin, then rotate
+        local_x = np.array([-size / 2 + margin + (p[0] / denom) * span for p in pts])
+        local_y = np.array([-size / 2 + margin + (p[1] / denom) * span for p in pts])
+        ca, sa = np.cos(rot), np.sin(rot)
+        xs = local_x * ca - local_y * sa + cx
+        ys = local_x * sa + local_y * ca + cy
+
+        zorder = 1 + durs[idx] / max_dur
+        lw = lw_map[order] * (size / base_size)
+        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
+                solid_capstyle="round", zorder=zorder)
+
+    pad = 3.5
+    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    ax.set_ylim(-r_outer - pad, r_outer + pad)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    ax.set_title("Playing in the Band — Hilbert Duration Sunflower by Era\n"
+                 "wedges ∝ track count  ·  epic jams on the rim  ·  "
+                 "tile area & complexity ∝ duration",
+                 fontsize=15, pad=14, color="white")
+
+    # Legend
+    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
+                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    edgecolor="#444", labelcolor="white")
+    leg.get_frame().set_linewidth(0.5)
+
+    fig.savefig(OUTPUT_DIR / "08_hilbert_duration_era.png", dpi=250,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  08_hilbert_duration_era.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 9. Gosper Duration Era Sunflower — Playing in the Band
+# ══════════════════════════════════════════════════════════════════════════
+
+def plot_gosper_duration_era(conn):
+    """Gosper sunflower segmented by era wedges, duration-sorted within each."""
+    rows = _query_pitb_with_month(conn)
+
+    # Assign eras and sort: by era, then by duration ascending within each
+    assigned = _assign_eras(rows)
+    assigned.sort(key=lambda x: (x[0], x[1]["dur_min"]))
+
+    durs = np.array([r["dur_min"] for (_, r) in assigned])
+    n_tiles = len(assigned)
+    max_dur = durs.max()
+    rng = np.random.default_rng(42)
+
+    # Pre-compute normalized Gosper curves at orders 1-4
+    gosper_norm = {}
+    gosper_angle = {}
+    for order in range(1, 5):
+        raw = _gosper_points(order)
+        delta = raw[-1] - raw[0]
+        gosper_angle[order] = np.arctan2(delta[1], delta[0])
+        mid = (raw[0] + raw[-1]) / 2
+        centered = raw - mid
+        extent = max(centered[:, 0].max() - centered[:, 0].min(),
+                     centered[:, 1].max() - centered[:, 1].min())
+        if extent > 0:
+            centered /= extent
+        gosper_norm[order] = centered
+
+    # Quartile bins → curve order + color + discrete size
+    bins = _duration_bins(durs)
+    bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
+    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
+    base_size = 2.0 * 1.3  # Gosper density compensation
+
+    # Era-wedge layout (tighter k for Gosper's larger tiles)
+    tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
+        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.54)
+
+    # Random rotation per tile
+    tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
+
+    fig, ax = plt.subplots(figsize=(30, 30))
+    fig.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    # Draw era spokes and labels
+    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer)
+
+    # Draw smallest tiles first so the epic jams render on top
+    draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
+
+    for idx in draw_order:
+        bini = bins[idx]
+        order = bin_to_order[bini]
+        pts = gosper_norm[order].copy()
+        size = tile_sizes[idx]
+        rot = tile_rots[idx]
+
+        # Subtract intrinsic angle so curve aligns with random rotation
+        rot_adj = rot - gosper_angle[order]
+        ca, sa = np.cos(rot_adj), np.sin(rot_adj)
+        scaled = pts * size
+        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
+        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
+
+        color = BIN_COLORS[bini]
+        zorder = 1 + durs[idx] / max_dur
+        lw = lw_map[order] * (size / base_size)
+
+        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
+                solid_capstyle="round", zorder=zorder)
+
+    pad = 3.5
+    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    ax.set_ylim(-r_outer - pad, r_outer + pad)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    ax.set_title("Playing in the Band — Gosper Duration Sunflower by Era\n"
+                 "wedges ∝ track count  ·  epic jams on the rim  ·  "
+                 "tile area & complexity ∝ duration",
+                 fontsize=15, pad=14, color="white")
+
+    # Legend
+    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
+                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    edgecolor="#444", labelcolor="white")
+    leg.get_frame().set_linewidth(0.5)
+
+    fig.savefig(OUTPUT_DIR / "09_gosper_duration_era.png", dpi=250,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  09_gosper_duration_era.png")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════
@@ -1001,8 +1346,10 @@ def main():
     plot_gosper_strip(conn)
     plot_hilbert_duration(conn)
     plot_gosper_duration(conn)
+    plot_hilbert_duration_era(conn)
+    plot_gosper_duration_era(conn)
     conn.close()
-    print(f"Done — 7 plots saved to {OUTPUT_DIR}/")
+    print(f"Done — 9 plots saved to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,13 @@ def cmd_scrape(args):
             max_age_days=args.max_age,
         )
 
+        # Prune songs with very few tracks — after processing ~18K recordings,
+        # real songs appear many times; rare entries are junk/one-offs
+        from gdtimings.normalize import prune_rare_songs
+        pruned = prune_rare_songs(conn, min_tracks=3)
+        if pruned:
+            print(f"\n  Pruned {pruned} rare songs (< 3 tracks, not in canonical dict)")
+
     conn.close()
 
 

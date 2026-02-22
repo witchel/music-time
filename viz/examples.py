@@ -141,20 +141,31 @@ def _gosper_points(order):
 # ── Duration-bin color palette (jewel tones on dark background) ───────
 BIN_COLORS = ["#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]  # gold, coral, teal, lavender
 BIN_LABELS = ["Epic jams", "Extended", "Standard", "Short"]
-# Area ratio 9:4:2:1 → side ratio 3 : 2 : 1.4 : 1
-_BIN_SIZE_RATIOS = np.array([3.0, 2.0, 1.4, 1.0])
+# Area ratio ~6:4:1:0.5 → side ratio 2.5 : 2 : 1.0 : 0.7
+_BIN_SIZE_RATIOS = np.array([2.5, 2.0, 1.0, 0.7])
+
+
+def _duration_thresholds(durs):
+    """Compute duration bin thresholds.
+
+    Uses strict ``>`` with q50 nudged up by 0.1 min so that performances
+    barely over a round-minute boundary (e.g. 8 min 0.1 s) fall into the
+    lower bin.  Overall balance stays within ±7 of perfect quartiles.
+    """
+    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    return q75, q50 + 0.1, q25
 
 
 def _duration_bins(durs):
-    """Assign each duration to one of 4 quartile-based bins (0 = longest)."""
-    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    """Assign each duration to one of 4 bins (0 = longest)."""
+    q75, q50, q25 = _duration_thresholds(durs)
     bins = np.empty(len(durs), dtype=int)
     for i, d in enumerate(durs):
-        if d >= q75:
+        if d > q75:
             bins[i] = 0
-        elif d >= q50:
+        elif d > q50:
             bins[i] = 1
-        elif d >= q25:
+        elif d > q25:
             bins[i] = 2
         else:
             bins[i] = 3
@@ -215,8 +226,8 @@ def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1,
 # ── Strip-layout helpers ─────────────────────────────────────────────────
 
 def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=2.5,
-                  max_strip_height=5.5, year_gap=-0.3,
-                  hiatus_gap=2.5, min_size=0.2, max_size=3.5, seed=42):
+                  max_strip_height=5.5, year_gap=0.4,
+                  hiatus_gap=2.5, min_size=0.2, max_size=2.5, seed=42):
     """Compute tile positions for a dense year-strip layout.
 
     Tiles are placed center-out: longest performances at the center of
@@ -406,7 +417,7 @@ def plot_hilbert(conn):
 
     # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
-    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
 
     for idx in draw_order:
         size = tile_sizes[idx]
@@ -514,7 +525,7 @@ def plot_gosper_flow(conn):
     # ── Draw ──
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
 
     fig, ax = plt.subplots(figsize=(22, 22))
     fig.set_facecolor("#1a1a2e")
@@ -589,7 +600,7 @@ def plot_hilbert_strip(conn):
     # Color mapping
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
 
     fig, ax = plt.subplots(figsize=(24, 30))
     fig.set_facecolor("#1a1a2e")
@@ -694,7 +705,7 @@ def plot_gosper_strip(conn):
     # Color mapping
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
     cmap = plt.cm.YlOrRd
-    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
 
     fig, ax = plt.subplots(figsize=(24, 30))
     fig.set_facecolor("#1a1a2e")
@@ -785,7 +796,7 @@ def plot_hilbert_duration(conn):
     # ── Quartile bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
-    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
     base_size = 2.0  # bin 3 (short) gets this; bin 0 (epic) gets 2× = 4.0
     tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
 
@@ -855,7 +866,7 @@ def plot_hilbert_duration(conn):
                  fontsize=15, pad=14, color="white")
 
     # Legend
-    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    q75, q50, q25 = _duration_thresholds(durs)
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
@@ -909,7 +920,7 @@ def plot_gosper_duration(conn):
     # ── Quartile bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
-    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
     # Gosper curves are sparser than Hilbert, so 1.3× base size
     base_size = 2.0 * 1.3
     tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
@@ -972,7 +983,7 @@ def plot_gosper_duration(conn):
                  fontsize=15, pad=14, color="white")
 
     # Legend
-    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    q75, q50, q25 = _duration_thresholds(durs)
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
@@ -1014,7 +1025,7 @@ def _assign_eras(rows):
 
 
 def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
-                      gap_deg=1.5):
+                      gap_deg=1.5, era_k_scales=None):
     """Compute tile positions for era-segmented sunflower.
 
     Parameters
@@ -1023,6 +1034,8 @@ def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
         Pre-sorted by era, then by duration ascending within each era.
     base_size : float
         Tile size for bin 3 (short).
+    era_k_scales : dict, optional
+        Per-era multiplier for k (e.g. {1: 0.8} to tighten Peak Jams).
     size_ratios : array
         Per-bin size multiplier.
     bins : array
@@ -1054,31 +1067,35 @@ def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
     gap_rad = np.radians(gap_deg)
     era_boundaries = []  # (start_angle, end_angle, era_name)
     angle_cursor = -np.pi / 2
-    for ei, (name, _, _) in enumerate(PITB_ERAS):
+    for ei, (name, y0, y1) in enumerate(PITB_ERAS):
         if era_counts[ei] == 0:
             continue
         wedge_deg = usable_deg * era_counts[ei] / total_count
         wedge_rad = np.radians(wedge_deg)
         era_start = angle_cursor + gap_rad / 2
         era_end = era_start + wedge_rad
-        era_boundaries.append((era_start, era_end, name, ei))
+        era_boundaries.append((era_start, era_end, name, ei, y0, y1))
         angle_cursor = era_end + gap_rad / 2
 
     # Build lookup: era_index → (start, width)
     era_wedge = {}
-    for (start, end, _, ei) in era_boundaries:
+    for (start, end, _, ei, _, _) in era_boundaries:
         era_wedge[ei] = (start, end - start)
 
     # Place tiles per era using golden-angle within the wedge
     golden_angle = np.pi * (3 - np.sqrt(5))
-    # Track cumulative area per era for radius computation
+    # Track cumulative area per era for radius computation.
+    # Exponent > 0.5 pushes large (epic) tiles further out radially,
+    # giving them more room at the rim where they need it.
+    radial_exp = 0.55
     era_cumul = [0.0] * len(PITB_ERAS)
     era_tile_idx = [0] * len(PITB_ERAS)  # count within era
 
+    _ek = era_k_scales or {}
     for i, (ei, _) in enumerate(assigned):
         size = tile_sizes[i]
         era_cumul[ei] += size ** 2
-        r = k * np.sqrt(era_cumul[ei])
+        r = k * _ek.get(ei, 1.0) * era_cumul[ei] ** radial_exp
 
         j = era_tile_idx[ei]
         era_start, era_width = era_wedge[ei]
@@ -1096,38 +1113,29 @@ def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
 
 
 def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer, pad=3.5):
-    """Draw radial spokes at era boundaries and era labels."""
+    """Draw radial spokes at era boundaries and horizontal era labels."""
     r_spoke = r_outer + pad * 0.3
 
-    for start, end, name, _ in era_boundaries:
+    for start, end, name, _, y0, y1 in era_boundaries:
         # Spoke at start of each wedge
         ax.plot([0, r_spoke * np.cos(start)],
                 [0, r_spoke * np.sin(start)],
-                color="#555577", linewidth=1.5, alpha=0.7, zorder=0.5)
+                color="#555577", linewidth=3.0, alpha=0.7, zorder=0.5)
 
-        # Label at middle of wedge, 70% of outer radius
+        # Label at middle of wedge, 72% of outer radius — horizontal (no rotation)
         mid_angle = (start + end) / 2
         label_r = r_outer * 0.72
         lx = label_r * np.cos(mid_angle)
         ly = label_r * np.sin(mid_angle)
 
-        # Rotate text to follow the angle, keeping it readable
-        text_angle = np.degrees(mid_angle)
-        # Flip text that would be upside-down
-        if -270 < text_angle < -90 or 90 < text_angle < 270:
-            text_angle += 180
-        ax.text(lx, ly, name, color="white", fontsize=10, fontweight="bold",
-                ha="center", va="center", rotation=text_angle,
+        year_str = f"{y0}–{y1}" if y0 != y1 else str(y0)
+        label = f"{name}\n{year_str}"
+        ax.text(lx, ly, label, color="white", fontsize=14, fontweight="bold",
+                ha="center", va="center", rotation=0,
                 alpha=0.85, zorder=10,
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="#1a1a2e",
                           edgecolor="none", alpha=0.7))
 
-    # Closing spoke (end of last era)
-    if era_boundaries:
-        last_end = era_boundaries[-1][1]
-        ax.plot([0, r_spoke * np.cos(last_end)],
-                [0, r_spoke * np.sin(last_end)],
-                color="#555577", linewidth=1.5, alpha=0.7, zorder=0.5)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1155,12 +1163,13 @@ def plot_hilbert_duration_era(conn):
     # Quartile bins → curve order + color + discrete size
     bins = _duration_bins(durs)
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
-    lw_map = {2: 2.2, 3: 1.2, 4: 0.5, 5: 0.25}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
     base_size = 2.0
 
     # Era-wedge layout
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
-        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.7)
+        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=1.2,
+        era_k_scales={1: 0.85, 3: 0.92})
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -1203,7 +1212,8 @@ def plot_hilbert_duration_era(conn):
                 solid_capstyle="round", zorder=zorder)
 
     pad = 3.5
-    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    shift = r_outer * 0.22  # shift view left so Peak Jams wedge has more room
+    ax.set_xlim(-r_outer - pad + shift, r_outer + pad + shift)
     ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -1213,15 +1223,30 @@ def plot_hilbert_duration_era(conn):
                  "tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
-    # Legend
-    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    # Duration legend (top row)
+    q75, q50, q25 = _duration_thresholds(durs)
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
     leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
                     ncol=4, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white")
+                    edgecolor="#444", labelcolor="white",
+                    bbox_to_anchor=(0.5, 1.0))
     leg.get_frame().set_linewidth(0.5)
+
+    # Era legend (second row, below duration legend)
+    era_colors = ["#7B68EE", "#FF8C00", "#20B2AA", "#DC143C", "#32CD32", "#BA55D3"]
+    era_patches = []
+    for i, (_, _, name, _, y0, y1) in enumerate(era_boundaries):
+        yr = f"{y0}–{y1}" if y0 != y1 else str(y0)
+        era_patches.append(Patch(facecolor=era_colors[i % len(era_colors)],
+                                 alpha=0.0, label=f"{name} ({yr})"))
+    leg2 = ax.legend(handles=era_patches, loc="upper center", fontsize=13,
+                     ncol=len(era_boundaries), framealpha=0.85,
+                     facecolor="#1a1a2e", edgecolor="#444", labelcolor="#aaaacc",
+                     bbox_to_anchor=(0.5, 0.97))
+    leg2.get_frame().set_linewidth(0.5)
+    ax.add_artist(leg)  # re-add first legend so both display
 
     fig.savefig(OUTPUT_DIR / "08_hilbert_duration_era.png", dpi=250,
                 facecolor=fig.get_facecolor())
@@ -1264,12 +1289,13 @@ def plot_gosper_duration_era(conn):
     # Quartile bins → curve order + color + discrete size
     bins = _duration_bins(durs)
     bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
-    lw_map = {1: 2.4, 2: 1.5, 3: 0.5, 4: 0.25}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
     base_size = 2.0 * 1.3  # Gosper density compensation
 
     # Era-wedge layout (tighter k for Gosper's larger tiles)
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
-        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.54)
+        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.92,
+        era_k_scales={1: 0.85, 3: 0.92})
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -1306,7 +1332,8 @@ def plot_gosper_duration_era(conn):
                 solid_capstyle="round", zorder=zorder)
 
     pad = 3.5
-    ax.set_xlim(-r_outer - pad, r_outer + pad)
+    shift = r_outer * 0.22  # shift view left so Peak Jams wedge has more room
+    ax.set_xlim(-r_outer - pad + shift, r_outer + pad + shift)
     ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -1316,15 +1343,30 @@ def plot_gosper_duration_era(conn):
                  "tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
-    # Legend
-    q75, q50, q25 = np.percentile(durs, [75, 50, 25])
+    # Duration legend (top row)
+    q75, q50, q25 = _duration_thresholds(durs)
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
     leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
                     ncol=4, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white")
+                    edgecolor="#444", labelcolor="white",
+                    bbox_to_anchor=(0.5, 1.0))
     leg.get_frame().set_linewidth(0.5)
+
+    # Era legend (second row, below duration legend)
+    era_colors = ["#7B68EE", "#FF8C00", "#20B2AA", "#DC143C", "#32CD32", "#BA55D3"]
+    era_patches = []
+    for i, (_, _, name, _, y0, y1) in enumerate(era_boundaries):
+        yr = f"{y0}–{y1}" if y0 != y1 else str(y0)
+        era_patches.append(Patch(facecolor=era_colors[i % len(era_colors)],
+                                 alpha=0.0, label=f"{name} ({yr})"))
+    leg2 = ax.legend(handles=era_patches, loc="upper center", fontsize=13,
+                     ncol=len(era_boundaries), framealpha=0.85,
+                     facecolor="#1a1a2e", edgecolor="#444", labelcolor="#aaaacc",
+                     bbox_to_anchor=(0.5, 0.97))
+    leg2.get_frame().set_linewidth(0.5)
+    ax.add_artist(leg)  # re-add first legend so both display
 
     fig.savefig(OUTPUT_DIR / "09_gosper_duration_era.png", dpi=250,
                 facecolor=fig.get_facecolor())

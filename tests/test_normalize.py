@@ -29,6 +29,29 @@ class TestCleanTitle:
     def test_strip_identifier_prefix(self):
         assert clean_title("gd77-05-08d1t01 - Dark Star") == "Dark Star"
         assert clean_title("gd1977-05-08d1t01 - Dark Star") == "Dark Star"
+        # Space-separated set/track: "gd81-12-28 s2t07 Drums"
+        assert clean_title("gd81-12-28 s2t07 Drums") == "Drums"
+        assert clean_title("gd83-10-11 s2t03 I Need A Miracle") == "I Need A Miracle"
+        # Space between set and track: "gd79-07-01 s1 t02 Title"
+        assert clean_title("gd79-07-01 s1 t02 Franklin's Tower") == "Franklin's Tower"
+        # Track-only, no disc/set: "gd73-06-22 t01 Bertha"
+        assert clean_title("gd73-06-22 t01 Bertha") == "Bertha"
+
+    def test_strip_disc_track_comma(self):
+        """Disc01,Track01 format from some archive.org releases."""
+        assert clean_title("Disc01,Track01 Hell In A Bucket") == "Hell In A Bucket"
+        assert clean_title("Disc02,Track03 Truckin'") == "Truckin'"
+        assert clean_title("Disc01,Track01 Tuning") == "Tuning"
+
+    def test_bare_disc_track_code_dropped(self):
+        """Bare D1T12 codes with no song name are dropped."""
+        assert clean_title("D1T12") == ""
+        assert clean_title("D2T05") == ""
+
+    def test_spelled_out_disc_track(self):
+        """Spelled-out disc/track prefixes."""
+        assert clean_title('Disc five, track seven: "Jam into Days Between') == "Jam into Days Between"
+        assert clean_title('Disc two, track two: "Beautiful Jam') == "Beautiful Jam"
 
     def test_strip_duration_suffix(self):
         assert clean_title("Dark Star \u2013 14:35") == "Dark Star"
@@ -39,6 +62,9 @@ class TestCleanTitle:
         assert clean_title("Dark Star >") == "Dark Star"
         assert clean_title("Dark Star \u2192") == "Dark Star"
         assert clean_title("St. Stephen >  ") == "St. Stephen"
+        # Arrow variants: -> should also be stripped
+        assert clean_title("Dark Star ->") == "Dark Star"
+        assert clean_title("Let The Good Times Roll ->") == "Let The Good Times Roll"
 
     def test_strip_set_annotations(self):
         assert clean_title("Dark Star [Set 1]") == "Dark Star"
@@ -88,8 +114,33 @@ class TestCleanTitle:
     def test_strip_bracketed_metadata(self):
         assert clean_title("[crowd]") == ""
 
-    def test_strip_segue_sequence(self):
-        assert clean_title("Alligator > Drums > Jam") == "Alligator"
+    def test_multi_song_combo_dropped(self):
+        """Multi-song combo tracks are dropped (return empty)."""
+        assert clean_title("Alligator > Drums > Jam") == ""
+        assert clean_title("Help On The Way > Slipknot! > Franklin's Tower") == ""
+        assert clean_title("Me & My Uncle > Mexicali Blues") == ""
+        assert clean_title("Drums > Space") == ""
+        assert clean_title("Drums->Space") == ""
+        assert clean_title("Lazy Lightning -> Supplication") == ""
+        assert clean_title("Good Lovin' > La Bamba > Good Lovin") == ""
+        # Trailing apostrophe before segue
+        assert clean_title("Lazy Lightnin' > Supplication") == ""
+        assert clean_title("Truckin' > Spoonful Jam") == ""
+
+    def test_dotted_tape_flip_names_cleaned(self):
+        """Tape-flip dotted names like Dru..ms are cleaned of dots."""
+        # The > is preserved (tape-flip annotation, not a segue)
+        result = clean_title("Dru..ms > (Tape Flip)")
+        assert "Drums" in result
+        assert ".." not in result
+        result = clean_title("S..pace > (Tape Flip Near Start)")
+        assert "Space" in result
+        assert ".." not in result
+
+    def test_tape_flip_annotation_preserved(self):
+        """Tape-flip annotations with > are single songs, not combos."""
+        assert clean_title("Dru..ms > (Tape Flip)") != ""
+        assert clean_title("S..pace > (Tape Flip Near Start)") != ""
 
     def test_simple_segue_preserved(self):
         """Single segue marker (not a sequence) is handled by existing logic."""

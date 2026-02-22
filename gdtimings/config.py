@@ -6,7 +6,7 @@ import os
 DB_DIR = os.path.expanduser("~/.gdtimings")
 DB_PATH = os.path.join(DB_DIR, "gdtimings.db")
 ARCHIVE_CACHE_DIR = os.path.join(DB_DIR, "cache")
-ARCHIVE_DEFAULT_WORKERS = 8
+ARCHIVE_DEFAULT_WORKERS = 64
 
 # ── Wikipedia API ──────────────────────────────────────────────────────
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
@@ -93,7 +93,7 @@ RELEASE_COVERAGE_OVERRIDES = {
 ARCHIVE_SCRAPE_URL = "https://archive.org/services/search/v1/scrape"
 ARCHIVE_METADATA_URL = "https://archive.org/metadata/{identifier}"
 ARCHIVE_USER_AGENT = "GDTimingsBot/1.0 (Grateful Dead song timings research)"
-ARCHIVE_RATE_LIMIT = 0.5  # seconds between requests
+ARCHIVE_RATE_LIMIT = 0.0  # seconds between requests (IA allows 500/s)
 
 # ── Quality ranking ────────────────────────────────────────────────────
 QUALITY_RANKS = {

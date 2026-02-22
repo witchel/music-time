@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.patches import Patch
 import numpy as np
 
 from gdtimings.db import get_connection
@@ -140,6 +141,8 @@ def _gosper_points(order):
 # ── Duration-bin color palette (jewel tones on dark background) ───────
 BIN_COLORS = ["#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]  # gold, coral, teal, lavender
 BIN_LABELS = ["Epic jams", "Extended", "Standard", "Short"]
+# Area ratio 4:3:2:1 → side ratio 2 : √3 : √2 : 1
+_BIN_SIZE_RATIOS = np.array([2.0, np.sqrt(3), np.sqrt(2), 1.0])
 
 
 def _duration_bins(durs):
@@ -779,14 +782,30 @@ def plot_hilbert_duration(conn):
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # ── Quartile bins → curve order + color ──
+    # ── Quartile bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
     lw_map = {2: 2.8, 3: 1.6, 4: 0.9, 5: 0.55}
+    base_size = 2.0  # bin 3 (short) gets this; bin 0 (epic) gets 2× = 4.0
+    tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
 
-    # ── Sunflower spiral layout — wide size range for clear area contrast ──
-    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, spacing=2.5)
+    # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
+    # Standard Fermat: r = c*√i gives uniform density.  We want density
+    # ∝ 1/size² so small tiles pack tight and big ones spread out.
+    # Achieve this by making area grow proportional to tile size²:
+    #   πr² ∝ Σ size²  →  r ∝ √(Σ size²)
+    golden_angle = np.pi * (3 - np.sqrt(5))
+    tile_cx = np.empty(n_tiles)
+    tile_cy = np.empty(n_tiles)
+    cumul_area = 0.0
+    k = 0.7  # packing factor (<1 = tighter)
+    for i in range(n_tiles):
+        cumul_area += tile_sizes[i] ** 2
+        r = k * np.sqrt(cumul_area)
+        theta = i * golden_angle
+        tile_cx[i] = r * np.cos(theta)
+        tile_cy[i] = r * np.sin(theta)
+    r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -836,7 +855,6 @@ def plot_hilbert_duration(conn):
                  fontsize=15, pad=14, color="white")
 
     # Legend
-    from matplotlib.patches import Patch
     q75, q50, q25 = np.percentile(durs, [75, 50, 25])
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
@@ -888,18 +906,28 @@ def plot_gosper_duration(conn):
             centered /= extent
         gosper_norm[order] = centered
 
-    # ── Quartile bins → curve order + color ──
+    # ── Quartile bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
     lw_map = {1: 3.0, 2: 2.0, 3: 1.0, 4: 0.55}
+    # Gosper curves are sparser than Hilbert, so 1.3× base size
+    base_size = 2.0 * 1.3
+    tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
 
-    # ── Sunflower spiral layout — wide size range for clear area contrast ──
-    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(
-        durs, min_size=0.12, max_size=4.0, spacing=2.5)
-
-    # Gosper curves don't fill their bounding box as densely as Hilbert,
-    # so scale up by ~30% for visual equivalence.
-    tile_sizes = tile_sizes * 1.3
+    # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
+    # r = k * √(Σ size²)  →  density ∝ 1/size², tight center, roomy rim
+    golden_angle = np.pi * (3 - np.sqrt(5))
+    tile_cx = np.empty(n_perfs)
+    tile_cy = np.empty(n_perfs)
+    cumul_area = 0.0
+    k = 0.7
+    for i in range(n_perfs):
+        cumul_area += tile_sizes[i] ** 2
+        r = k * np.sqrt(cumul_area)
+        theta = i * golden_angle
+        tile_cx[i] = r * np.cos(theta)
+        tile_cy[i] = r * np.sin(theta)
+    r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_perfs)
@@ -943,7 +971,6 @@ def plot_gosper_duration(conn):
                  fontsize=15, pad=14, color="white")
 
     # Legend
-    from matplotlib.patches import Patch
     q75, q50, q25 = np.percentile(durs, [75, 50, 25])
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]

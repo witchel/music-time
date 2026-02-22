@@ -228,7 +228,12 @@ _CANONICAL_NAMES = list(CANONICAL_SONGS.keys())
 
 
 def clean_title(raw):
-    """Strip track numbers, segue markers, set annotations, normalize quotes."""
+    """Strip track numbers, segue markers, set annotations, normalize quotes.
+
+    Returns empty string for multi-song combo tracks (e.g. "Help > Slip > Franklin's")
+    — these are dropped because individual split tracks exist for the same concerts
+    and provide cleaner per-song durations.
+    """
     s = raw.strip()
     # Take only the first line (discard venue/date info on subsequent lines)
     s = s.split("\n")[0].strip()
@@ -238,18 +243,47 @@ def clean_title(raw):
     # Remove bracketed metadata labels like [crowd], [tuning], [signals]
     s = re.sub(r'^\[.*\]$', '', s).strip()
 
-    # Strip segue sequences: "Song > Drums > Song" → "Song"
-    # Take only the first song name before multi-step segue chains
-    if re.search(r'\s*[>→]\s*.+[>→]\s*', s):
-        s = re.split(r'\s*[>→]\s*', s)[0].strip()
+    # ── Multi-song combo tracks → drop entirely ──
+    # Tracks like "Help > Slip > Franklin's" or "Drums > Space" combine
+    # multiple songs into one track.  Other releases split them properly,
+    # so we drop combos rather than trying to extract a single song.
+    # Match: "Song > Song" or "Song -> Song" or "Song → Song"
+    # (with at least one letter on each side of the arrow).
+    # Exclude tape-flip annotations like "Dru..ms > (Tape Flip)"
+    # and "S..pace > (Tape Flip Near Start)" — those are single songs.
+    if re.search(r'[A-Za-z\'\"]\s*(?:->|→|>)\s*[A-Za-z(]', s) \
+       and '(Tape Flip' not in s:
+        return ""
 
     # Remove leading track numbers like "1.", "01.", "1)"
     s = re.sub(r"^\d+[\.\)]\s*", "", s)
     # Strip archive.org-style prefixes:
     #   "d1t01 - Title", "d2t05. Title" (disc/track notation)
     #   "gd77-05-08d1t01 - Title" (identifier prefix)
-    s = re.sub(r'^gd\d{2,4}-?\d{2}-?\d{2}d\d+t\d+\s*[-–—.]\s*', '', s, flags=re.IGNORECASE)
+    #   "gd81-12-28 s2t07 Title" (space-separated set/track notation)
+    #   "gd79-07-01 s1 t02 Title" (space between set and track)
+    #   "gd73-06-22 t01 Title" (track-only, no disc/set prefix)
+    #   "GD 1987-03-22.GEMS.d01t01" (full identifier as title, no song name)
+    # Aggressive stripping: entire identifier as title (no song name)
+    # "GD 1987-03-22.GEMS.d01t01", "GD-Disc02,Track11", "GD1989-07-17trk02"
+    s = re.sub(r'^gd[\s\-]?\d{2,4}[\-.\s]\S*$', '', s, flags=re.IGNORECASE).strip()
+    # "GD 01 6-18-83 ..." or "GD 02 6-18-83 ..." (numbered file dumps)
+    s = re.sub(r'^gd\s+\d+\s+\d{1,2}-\d{1,2}-\d{2,4}\b.*$', '', s, flags=re.IGNORECASE).strip()
+    s = re.sub(r'^gd\d{2,4}-?\d{2}-?\d{2}\s*(?:[ds]\d+\s*)?t\d+\s*[-–—.]?\s*',
+               '', s, flags=re.IGNORECASE)
     s = re.sub(r'^d\d+t\d+\s*[-–—.]\s*', '', s, flags=re.IGNORECASE)
+    # "Disc01,Track01 Title" or "Disc02,Track03 Title" (comma-separated)
+    # Also "GD-Disc02,Track11" (with GD prefix)
+    s = re.sub(r'^(?:gd[\s\-]?)?Disc\d+\s*,\s*Track\d+\s*', '', s, flags=re.IGNORECASE)
+    # Bare disc/track codes with no song: "D1T12", "D2T05", "disc305"
+    if re.match(r'^D\d+T?\d*$', s, flags=re.IGNORECASE):
+        return ""
+    if re.match(r'^disc\d+$', s, flags=re.IGNORECASE):
+        return ""
+    # Spelled-out disc/track: 'Disc five, track seven: "Jam into Days Between'
+    s = re.sub(r'^Disc\s+\w+\s*,\s*track\s+\w+\s*:\s*', '', s, flags=re.IGNORECASE)
+    # Clean tape-flip dotted names: "Dru..ms" → "Drums", "S..pace" → "Space"
+    s = re.sub(r'\.\.+', '', s)
     # "01 - Title" or "02 – Title" (number + spaced dash, distinct from "01." above)
     s = re.sub(r'^\d+\s+[-–—]\s+', '', s)
     # Normalize quotes: convert all fancy quotes to straight
@@ -258,17 +292,17 @@ def clean_title(raw):
     # Remove trailing footnote markers like [a], [b], [1]
     s = re.sub(r'\s*\[[a-z0-9]+\]\s*$', '', s)
     # Remove segue markers FIRST (before duration, since → may follow duration)
-    s = s.rstrip(">→ ")
-    s = re.sub(r'\s*[>→]+\s*"?\s*$', '', s)
+    # Handle both > and -> variants
+    s = re.sub(r'\s*-?[>→]+\s*$', '', s)
     # Remove trailing duration like – 14:35 or - 5:32
     s = re.sub(r'\s*[–\-—]\s*\d+:\d{2}(?::\d{2})?\s*$', '', s)
     # Remove trailing writer credits: " (writers) with optional segue marker between
-    s = re.sub(r'"\s*[>→]?\s*\([^)]+\)\s*$', '', s)
+    s = re.sub(r'"\s*-?[>→]?\s*\([^)]+\)\s*$', '', s)
     # Remove trailing " - or " – (e.g. 'St. Stephen" -')
     s = re.sub(r'"\s*[–\-—]\s*$', '', s)
     # Catch-all: if a bare " remains followed by metadata (writers, duration, etc.)
     # truncate at the " — the title is everything before it
-    s = re.sub(r'"\s*[>→(–\-—].*$', '', s)
+    s = re.sub(r'"\s*-?[>→(–\-—].*$', '', s)
     # Remove trailing ", part N" (e.g. 'Space", part 1')
     s = re.sub(r'",?\s*part\s+\d+\s*$', '', s, flags=re.IGNORECASE)
     # Remove set annotations like "[Set 1]" or "(Set 2)"
@@ -287,8 +321,7 @@ def clean_title(raw):
     s = re.sub(r'\s*\(?(V\d+|verse\s+\d+|part\s+\d+|continued)\)?\s*$', '', s,
                flags=re.IGNORECASE)
     # Final cleanup: segue markers that may remain after other stripping
-    s = s.rstrip(">→ ")
-    s = re.sub(r"\s*[>→]\s*$", "", s)
+    s = re.sub(r'\s*-?[>→]+\s*$', '', s)
     # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s

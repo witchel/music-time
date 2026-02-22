@@ -141,8 +141,8 @@ def _gosper_points(order):
 # ── Duration-bin color palette (jewel tones on dark background) ───────
 BIN_COLORS = ["#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]  # gold, coral, teal, lavender
 BIN_LABELS = ["Epic jams", "Extended", "Standard", "Short"]
-# Area ratio 4:3:2:1 → side ratio 2 : √3 : √2 : 1
-_BIN_SIZE_RATIOS = np.array([2.0, np.sqrt(3), np.sqrt(2), 1.0])
+# Area ratio 9:4:2:1 → side ratio 3 : 2 : 1.4 : 1
+_BIN_SIZE_RATIOS = np.array([3.0, 2.0, 1.4, 1.0])
 
 
 def _duration_bins(durs):
@@ -840,7 +840,7 @@ def plot_hilbert_duration(conn):
         ys = local_x * sa + local_y * ca + cy
 
         zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order]
+        lw = lw_map[order] * (size / base_size)
         ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
                 solid_capstyle="round", zorder=zorder)
 
@@ -859,9 +859,9 @@ def plot_hilbert_duration(conn):
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
-    leg = ax.legend(handles=patches, loc="lower right", fontsize=11,
-                    framealpha=0.85, facecolor="#1a1a2e", edgecolor="#444",
-                    labelcolor="white")
+    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
+                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    edgecolor="#444", labelcolor="white")
     leg.get_frame().set_linewidth(0.5)
 
     fig.savefig(OUTPUT_DIR / "06_hilbert_duration_sunflower.png", dpi=250,
@@ -916,11 +916,12 @@ def plot_gosper_duration(conn):
 
     # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
     # r = k * √(Σ size²)  →  density ∝ 1/size², tight center, roomy rim
+    # Tighter k than Hilbert (0.7) to compensate for 1.3× larger tiles
     golden_angle = np.pi * (3 - np.sqrt(5))
     tile_cx = np.empty(n_perfs)
     tile_cy = np.empty(n_perfs)
     cumul_area = 0.0
-    k = 0.7
+    k = 0.54
     for i in range(n_perfs):
         cumul_area += tile_sizes[i] ** 2
         r = k * np.sqrt(cumul_area)
@@ -955,7 +956,7 @@ def plot_gosper_duration(conn):
 
         color = BIN_COLORS[bini]
         zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order]
+        lw = lw_map[order] * (size / base_size)
 
         ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
                 solid_capstyle="round", zorder=zorder)
@@ -975,9 +976,9 @@ def plot_gosper_duration(conn):
     labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
-    leg = ax.legend(handles=patches, loc="lower right", fontsize=11,
-                    framealpha=0.85, facecolor="#1a1a2e", edgecolor="#444",
-                    labelcolor="white")
+    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
+                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    edgecolor="#444", labelcolor="white")
     leg.get_frame().set_linewidth(0.5)
 
     fig.savefig(OUTPUT_DIR / "07_gosper_duration_sunflower.png", dpi=250,

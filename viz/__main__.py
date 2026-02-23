@@ -8,7 +8,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--tile-mode",
     choices=["positive", "negative"],
-    default="negative",
+    default="positive",
     help="Tile rendering style: colored lines on dark bg (positive) "
     "or colored fill with dark lines (negative, default)",
 )

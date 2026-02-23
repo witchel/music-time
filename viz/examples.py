@@ -404,7 +404,7 @@ GOSPER_SCALE = 1.3
 # ── Tile rendering mode ──────────────────────────────────────────────────
 # "positive" = colored lines on dark background (no fill shape)
 # "negative" = light tinted fill with dark (background-matched) lines
-TILE_MODE = "negative"
+TILE_MODE = "positive"
 
 
 def _lighten(hex_color, amount=0.45):

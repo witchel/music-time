@@ -158,7 +158,15 @@ Final DB after rebuild: **18,287 releases, 368,484 tracks, 996 songs,
 
 ---
 
-## 2026-02-23 — Tile alignment + 5-bin gigantous category
+## 2026-02-23 — Tile rendering modes, fine-tuning, era wedge clamping
+
+**Positive/negative tile modes** added as a `--tile-mode` CLI flag.
+Positive mode draws colored line curves on the dark background; negative
+mode fills the tile interior with color and draws dark lines over it.
+Positive became the default — it reads better at small sizes because the
+eye tracks the bright curves against dark space, whereas negative tiles
+at small sizes blur into colored blobs where the internal structure is
+hard to see.
 
 **Gigantous bin** added as a 5th duration category for jams ≥25 minutes.
 The original 4-bin system (quartile-based) lumped the rare, legendary
@@ -170,45 +178,20 @@ performances qualify — all from 1972-1974 — but they're the visual
 centerpiece of the era plots.
 
 **Tile alignment experiment** was prompted by visible overlap in the
-Gosper era plot.  Each tile is a space-filling curve (Hilbert or Gosper)
-rendered at a position on a sunflower spiral.  The original code rotated
-every tile to a random angle ∈ [0°, 360°), which gave an organic look
-but caused unpredictable collisions — a tile's protrusions might jut
-into a neighbor's space depending on how the random angles happened to
-align.
-
-Tested four rotation strategies on the Gosper era plot:
-- **Random** (baseline) — uniform random rotation per tile
-- **Aligned** (0°) — all tiles share the same orientation
-- **Hex-6** — random choice from 6 orientations at 60° intervals
-- **Hex-3** — random choice from 3 orientations at 120° intervals
-
-**Aligned won decisively.**  The Gosper curve is NOT hexagonally
-symmetric (its bounding shape has radius varying 0.18–0.77 across
-angular sectors), so the hex-quantized strategies didn't produce the
-honeycomb interlocking that hexagonal tiles would.  Aligned tiles work
-because the sunflower spiral's golden angle (~137.5°) is irrational —
-adjacent tiles are never at the same angular position, so identical
-protrusion profiles naturally avoid systematic collisions.
-
-Hilbert curves (which are square with 4-fold rotational symmetry) also
-look cleaner aligned — the grid-like texture makes size differences
-between bins more immediately legible, at the cost of a slightly more
-mechanical aesthetic.
-
-All four sunflower plots (06–09) now use aligned tiles.
-
----
-
-## 2026-02-23 (cont.) — Era wedge clamping + legend overhaul
+Gosper era plot.  Tested four rotation strategies: random, aligned (0°),
+hex-6 (60° quantized), and hex-3 (120° quantized).  **Aligned won
+decisively.**  The Gosper curve is NOT hexagonally symmetric (its
+bounding shape has radius varying 0.18–0.77 across angular sectors), so
+hex-quantized strategies didn't produce honeycomb interlocking.  Aligned
+tiles work because the sunflower spiral's golden angle (~137.5°) is
+irrational — adjacent tiles are never at the same angular position, so
+identical protrusion profiles naturally avoid systematic collisions.
 
 **Area-weighted wedges were a dead end.**  The first attempt at era
 segmentation allocated angular wedge space proportional to total tile
-*area* per era.  This gave Peak Jams (which has a single 47-minute
-Gigantous tile = 49 Seedlings in area) roughly 12× the angular space
-of Genesis.  Result: a vast sparse wedge with tiles flung far outward.
-Reverted to count-based wedge allocation where each era gets angular
-space proportional to its number of performances.
+*area* per era.  A single Gigantous tile = 49 Seedlings in area, so
+Peak Jams got ~12× the angular space of Genesis — a vast sparse wedge
+with tiles flung far outward.  Reverted to count-based wedge allocation.
 
 **Margin-aware angular clamping** was the key fix for tiles leaking
 across era boundaries.  The original clamp constrained tile *centers*
@@ -216,8 +199,7 @@ to the wedge, but tiles have physical size — a tile with side=7 at
 radius=20 subtends ~0.35 radians.  Clamping only the center lets half
 the tile visually intrude into the adjacent era.  The fix shrinks each
 tile's allowed angular range by `(tile_size/2) / r`, so the tile's
-*visual edge* just reaches the boundary.  At small radii this margin is
-large (tiles are big relative to the circle); at large radii it shrinks.
+*visual edge* just reaches the boundary.
 
 **Tangential damping** (0.7) complements the margin-aware clamping.
 The overlap resolver's repulsive forces are decomposed into radial and
@@ -231,12 +213,3 @@ the 31.7-minute runner-up, which with linear side mapping made its *area*
 2.2× larger.  The power-law shrinks the ratio while preserving monotonic
 ordering.  This fixed the detached Gigantous tile at the bottom of the
 Gosper sunflower (plot 07) that the overlap resolver kept ejecting.
-
-**Legend cleanup** across all plots:
-- Removed redundant "gigantous jams on the rim" and "longest at center"
-  notes (visually obvious from the layout)
-- Removed the era legend row from plots 08/09 (spoke labels already show
-  era names and year ranges)
-- Added performance counts to subtitles ("626 performances")
-- Standardized subtitle to "tile area proportional to performance length"
-- Increased legend font sizes (duration: 11→14, streamgraph: 7→10)

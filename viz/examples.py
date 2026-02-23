@@ -139,10 +139,14 @@ def _gosper_points(order):
 
 
 # ── Duration-bin color palette (jewel tones on dark background) ───────
-BIN_COLORS = ["#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]  # gold, coral, teal, lavender
-BIN_LABELS = ["Epic jams", "Extended", "Standard", "Short"]
-# Area ratio ~6:4:1:0.5 → side ratio 2.5 : 2 : 1.0 : 0.7
-_BIN_SIZE_RATIOS = np.array([2.5, 2.0, 1.0, 0.7])
+BIN_COLORS = ["#FFFFFF", "#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]
+#              white     gold       coral      teal       lavender
+BIN_LABELS = ["Gigantous (25+ min)", "Epic jams", "Extended", "Standard", "Short"]
+# Side ratios: gigantous 3.5× standard, epic 2.5×, extended 2×, short 0.7×
+_BIN_SIZE_RATIOS = np.array([3.5, 2.5, 2.0, 1.0, 0.7])
+
+# Fixed threshold for the gigantous bin (absolute, not percentile-based).
+_GIGANTOUS_THRESHOLD = 25.0  # minutes
 
 
 def _duration_thresholds(durs):
@@ -157,18 +161,25 @@ def _duration_thresholds(durs):
 
 
 def _duration_bins(durs):
-    """Assign each duration to one of 4 bins (0 = longest)."""
+    """Assign each duration to one of 5 bins (0 = longest).
+
+    Bin 0 (Gigantous) uses a fixed 25-min threshold — these are rare
+    outlier performances (11 of 626 PITB).  Bins 1-4 use quartile splits
+    of the remaining data.
+    """
     q75, q50, q25 = _duration_thresholds(durs)
     bins = np.empty(len(durs), dtype=int)
     for i, d in enumerate(durs):
-        if d > q75:
+        if d >= _GIGANTOUS_THRESHOLD:
             bins[i] = 0
-        elif d > q50:
+        elif d > q75:
             bins[i] = 1
-        elif d > q25:
+        elif d > q50:
             bins[i] = 2
-        else:
+        elif d > q25:
             bins[i] = 3
+        else:
+            bins[i] = 4
     return bins
 
 
@@ -789,15 +800,15 @@ def plot_hilbert_duration(conn):
     rng = np.random.default_rng(42)
 
     # Pre-compute Hilbert curves at multiple orders
-    h_orders = [2, 3, 4, 5]
+    h_orders = [2, 3, 4, 5, 6]
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # ── Quartile bins → curve order + color + discrete size ──
+    # ── Duration bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
-    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
-    base_size = 2.0  # bin 3 (short) gets this; bin 0 (epic) gets 2× = 4.0
+    bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
+    base_size = 2.0  # bin 4 (short) gets this
     tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
 
     # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
@@ -862,16 +873,17 @@ def plot_hilbert_duration(conn):
     ax.axis("off")
 
     ax.set_title("Playing in the Band — Hilbert Duration Sunflower\n"
-                 "epic jams on the rim  ·  tile area & complexity ∝ duration",
+                 "gigantous jams on the rim  ·  tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
     # Legend
     q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
     leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
                     edgecolor="#444", labelcolor="white")
     leg.get_frame().set_linewidth(0.5)
 
@@ -902,10 +914,10 @@ def plot_gosper_duration(conn):
     max_dur = durs.max()
     rng = np.random.default_rng(42)
 
-    # ── Pre-compute normalized Gosper curves at orders 1-4 ──
+    # ── Pre-compute normalized Gosper curves at orders 1-5 ──
     gosper_norm = {}
     gosper_angle = {}
-    for order in range(1, 5):
+    for order in range(1, 6):
         raw = _gosper_points(order)
         delta = raw[-1] - raw[0]
         gosper_angle[order] = np.arctan2(delta[1], delta[0])
@@ -917,10 +929,10 @@ def plot_gosper_duration(conn):
             centered /= extent
         gosper_norm[order] = centered
 
-    # ── Quartile bins → curve order + color + discrete size ──
+    # ── Duration bins → curve order + color + discrete size ──
     bins = _duration_bins(durs)
-    bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
+    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
     # Gosper curves are sparser than Hilbert, so 1.3× base size
     base_size = 2.0 * 1.3
     tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
@@ -979,16 +991,17 @@ def plot_gosper_duration(conn):
     ax.axis("off")
 
     ax.set_title("Playing in the Band — Gosper Duration Sunflower\n"
-                 "epic jams on the rim  ·  tile area & complexity ∝ duration",
+                 "gigantous jams on the rim  ·  tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
     # Legend
     q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
     leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
                     edgecolor="#444", labelcolor="white")
     leg.get_frame().set_linewidth(0.5)
 
@@ -1156,20 +1169,20 @@ def plot_hilbert_duration_era(conn):
     rng = np.random.default_rng(42)
 
     # Pre-compute Hilbert curves at multiple orders
-    h_orders = [2, 3, 4, 5]
+    h_orders = [2, 3, 4, 5, 6]
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # Quartile bins → curve order + color + discrete size
+    # Duration bins → curve order + color + discrete size
     bins = _duration_bins(durs)
-    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2}
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
+    bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
     base_size = 2.0
 
     # Era-wedge layout
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
         assigned, base_size, _BIN_SIZE_RATIOS, bins, k=1.2,
-        era_k_scales={1: 0.85, 3: 0.92})
+        era_k_scales={1: 0.82, 3: 0.92})
 
     # Random rotation per tile
     tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
@@ -1219,17 +1232,18 @@ def plot_hilbert_duration_era(conn):
     ax.axis("off")
 
     ax.set_title("Playing in the Band — Hilbert Duration Sunflower by Era\n"
-                 "wedges ∝ track count  ·  epic jams on the rim  ·  "
+                 "wedges ∝ track count  ·  gigantous jams on the rim  ·  "
                  "tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
     # Duration legend (top row)
     q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
     leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
                     edgecolor="#444", labelcolor="white",
                     bbox_to_anchor=(0.5, 1.0))
     leg.get_frame().set_linewidth(0.5)
@@ -1258,8 +1272,34 @@ def plot_hilbert_duration_era(conn):
 # 9. Gosper Duration Era Sunflower — Playing in the Band
 # ══════════════════════════════════════════════════════════════════════════
 
-def plot_gosper_duration_era(conn):
-    """Gosper sunflower segmented by era wedges, duration-sorted within each."""
+def _gosper_tile_rotations(n_tiles, mode, rng):
+    """Compute per-tile rotations for Gosper plots.
+
+    Modes:
+      "random"    – uniform [0, 2π) per tile (original behavior)
+      "aligned"   – all tiles at 0° (after subtracting intrinsic angle)
+      "hex6"      – quantized to nearest 60° multiple (6 orientations)
+      "hex3"      – quantized to nearest 120° multiple (3 orientations)
+    """
+    if mode == "aligned":
+        return np.zeros(n_tiles)
+    elif mode == "hex6":
+        # 6 orientations at 0°, 60°, 120°, 180°, 240°, 300°
+        choices = np.arange(6) * (np.pi / 3)
+        return rng.choice(choices, n_tiles)
+    elif mode == "hex3":
+        choices = np.arange(3) * (2 * np.pi / 3)
+        return rng.choice(choices, n_tiles)
+    else:  # "random"
+        return rng.uniform(0, 2 * np.pi, n_tiles)
+
+
+def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
+    """Gosper sunflower segmented by era wedges, duration-sorted within each.
+
+    rotation_mode: "random" | "aligned" | "hex6" | "hex3"
+    suffix: appended to filename, e.g. "_aligned"
+    """
     rows = _query_pitb_with_month(conn)
 
     # Assign eras and sort: by era, then by duration ascending within each
@@ -1271,10 +1311,10 @@ def plot_gosper_duration_era(conn):
     max_dur = durs.max()
     rng = np.random.default_rng(42)
 
-    # Pre-compute normalized Gosper curves at orders 1-4
+    # Pre-compute normalized Gosper curves at orders 1-5
     gosper_norm = {}
     gosper_angle = {}
-    for order in range(1, 5):
+    for order in range(1, 6):
         raw = _gosper_points(order)
         delta = raw[-1] - raw[0]
         gosper_angle[order] = np.arctan2(delta[1], delta[0])
@@ -1286,19 +1326,19 @@ def plot_gosper_duration_era(conn):
             centered /= extent
         gosper_norm[order] = centered
 
-    # Quartile bins → curve order + color + discrete size
+    # Duration bins → curve order + color + discrete size
     bins = _duration_bins(durs)
-    bin_to_order = {0: 4, 1: 3, 2: 2, 3: 1}
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
+    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
     base_size = 2.0 * 1.3  # Gosper density compensation
 
     # Era-wedge layout (tighter k for Gosper's larger tiles)
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
         assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.92,
-        era_k_scales={1: 0.85, 3: 0.92})
+        era_k_scales={1: 0.82, 3: 0.92})
 
-    # Random rotation per tile
-    tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
+    # Tile rotations — strategy depends on mode
+    tile_rots = _gosper_tile_rotations(n_tiles, rotation_mode, rng)
 
     fig, ax = plt.subplots(figsize=(30, 30))
     fig.set_facecolor("#1a1a2e")
@@ -1317,7 +1357,7 @@ def plot_gosper_duration_era(conn):
         size = tile_sizes[idx]
         rot = tile_rots[idx]
 
-        # Subtract intrinsic angle so curve aligns with random rotation
+        # Subtract intrinsic angle so curve aligns with chosen rotation
         rot_adj = rot - gosper_angle[order]
         ca, sa = np.cos(rot_adj), np.sin(rot_adj)
         scaled = pts * size
@@ -1338,18 +1378,21 @@ def plot_gosper_duration_era(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    ax.set_title("Playing in the Band — Gosper Duration Sunflower by Era\n"
-                 "wedges ∝ track count  ·  epic jams on the rim  ·  "
-                 "tile area & complexity ∝ duration",
+    mode_label = {"random": "random rotation", "aligned": "aligned (0°)",
+                  "hex6": "hex-6 (60° quantized)", "hex3": "hex-3 (120° quantized)"}
+    ax.set_title(f"Playing in the Band — Gosper Duration Sunflower by Era\n"
+                 f"rotation: {mode_label.get(rotation_mode, rotation_mode)}  ·  "
+                 f"tile area & complexity ∝ duration",
                  fontsize=15, pad=14, color="white")
 
     # Duration legend (top row)
     q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Epic jams (≥{q75:.0f} min)", f"Extended ({q50:.0f}–{q75:.0f} min)",
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(4)]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
     leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=4, framealpha=0.85, facecolor="#1a1a2e",
+                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
                     edgecolor="#444", labelcolor="white",
                     bbox_to_anchor=(0.5, 1.0))
     leg.get_frame().set_linewidth(0.5)
@@ -1368,10 +1411,11 @@ def plot_gosper_duration_era(conn):
     leg2.get_frame().set_linewidth(0.5)
     ax.add_artist(leg)  # re-add first legend so both display
 
-    fig.savefig(OUTPUT_DIR / "09_gosper_duration_era.png", dpi=250,
+    fname = f"09_gosper_duration_era{suffix}.png"
+    fig.savefig(OUTPUT_DIR / fname, dpi=250,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
-    print("  09_gosper_duration_era.png")
+    print(f"  {fname}")
 
 
 # ══════════════════════════════════════════════════════════════════════════

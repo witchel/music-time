@@ -19,7 +19,6 @@ import musicbrainzngs
 
 from gdtimings import db
 from gdtimings.config import (
-    MUSICBRAINZ_ARTIST_ID,
     MUSICBRAINZ_RATE_LIMIT,
     MUSICBRAINZ_SERIES_COVERAGE,
     MUSICBRAINZ_SERIES_IDS,
@@ -122,34 +121,23 @@ def scrape_series(conn, series_name, series_mbid, coverage, verbose=True):
     releases_added = 0
     tracks_added = 0
 
-    # Get release groups in the series
-    try:
-        _rate_limit()
-        # Use the browse API to get releases in the series
-        result = musicbrainzngs.get_release_group_in_series(series_mbid)
-        rg_list = result.get("release-group-list", [])
-    except (musicbrainzngs.WebServiceError, musicbrainzngs.ResponseError) as e:
-        if verbose:
-            print(f"    Series API failed ({e}), trying direct browse...")
-        rg_list = []
+    # Get release groups linked to this series
+    _rate_limit()
+    result = musicbrainzngs.get_series_by_id(
+        series_mbid, includes=["release-group-rels"]
+    )
+    rels = result.get("series", {}).get("release_group-relation-list", [])
 
-    if not rg_list:
-        # Fallback: browse releases by artist
-        _rate_limit()
-        result = musicbrainzngs.search_releases(
-            query=f'series:"{series_name}" AND arid:{MUSICBRAINZ_ARTIST_ID}',
-            limit=100,
-        )
-        release_list = result.get("release-list", [])
-        for rel in release_list:
-            r, t = _process_release(conn, rel["id"], coverage, verbose)
-            releases_added += r
-            tracks_added += t
+    if not rels:
+        if verbose:
+            print(f"    No release groups found in series {series_name}")
         return releases_added, tracks_added
 
-    for rg in rg_list:
-        rg_id = rg["id"]
-        # Get the best release for this release group
+    for rel in rels:
+        rg = rel.get("release-group", {})
+        rg_id = rg.get("id")
+        if not rg_id:
+            continue
         best_rel = _get_releases_for_release_group(rg_id)
         if not best_rel:
             continue

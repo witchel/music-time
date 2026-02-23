@@ -853,8 +853,10 @@ def _plot_duration_sunflower(conn, curve_type="hilbert", mobile=False):
                      fontsize=15, pad=14, color=LABEL_COLOR)
 
     if mobile:
-        _add_duration_legend(ax, durs, fontsize=11, ncol=3,
-                             bbox_to_anchor=(0.5, 1.02))
+        fig.subplots_adjust(top=0.90)
+        _add_duration_legend(ax, durs, fontsize=20, ncol=3,
+                             bbox_to_anchor=(0.5, 1.03),
+                             handleheight=1.5, handlelength=2.0)
         base = _CURVE_FILENAMES[("duration", curve_type)]
         fname = base.replace(".png", "_mobile.png")
         _save_plot(fig, fname, dpi=100)
@@ -1256,8 +1258,10 @@ def _plot_duration_era(conn, curve_type="hilbert",
 
     # Duration legend
     if mobile:
-        _add_duration_legend(ax, durs, fontsize=11, ncol=3,
-                             bbox_to_anchor=(0.5, 1.02))
+        fig.subplots_adjust(top=0.90)
+        _add_duration_legend(ax, durs, fontsize=20, ncol=3,
+                             bbox_to_anchor=(0.5, 1.03),
+                             handleheight=1.5, handlelength=2.0)
     else:
         _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 

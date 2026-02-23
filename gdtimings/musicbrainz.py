@@ -175,14 +175,10 @@ def _process_release(conn, release_mbid, coverage, verbose=True):
         medium_title = medium.get("title", "")
         disc_date = parse_date_from_title(medium_title)
 
-        # Fall back to release-level date if no date in disc title
-        if disc_date is None:
-            disc_date = release.get("date", "")
-            if disc_date and len(disc_date) >= 10:
-                disc_date = disc_date[:10]  # YYYY-MM-DD
-            else:
-                disc_date = None
-
+        # Only use dates parsed from disc titles — never fall back to the
+        # release-level date, which is the *publication* date (e.g. 1996 for
+        # a Dick's Picks of a 1970 concert).  Single-concert releases without
+        # disc-level dates rely on Wikipedia for the correct concert date.
         if disc_date is None:
             continue
 

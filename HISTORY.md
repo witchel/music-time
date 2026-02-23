@@ -131,5 +131,27 @@ a `get_release_group_in_series()` method despite what the naming
 convention suggests.  The correct approach uses the generic
 `get_series_by_id()` with relationship includes.
 
-Final DB after full rebuild: **18,415 releases, 371,907 tracks, 997
-canonical songs, 333 Drums sandwiches detected.**
+**Publication date bug** — discovered while validating PITB statistics
+for the viz module.  58 "Playing in the Band" performances appeared in
+years 1997-2026, which is impossible (Jerry Garcia died in 1995).  The
+root cause: for single-concert releases (Dick's Picks, Dave's Picks,
+etc.), the MusicBrainz disc titles are just "Disc 1", "Disc 2" with no
+embedded date.  The date parser returned None, and the fallback used
+`release.get("date")` — which is the *publication date*, not the concert
+date.  Dick's Picks Volume 4 (a 1970 concert) was filed under 1996, its
+release year.  This affected 127 of 151 MusicBrainz releases.
+
+The fix was simple: remove the release-date fallback entirely.  If no
+date is parseable from disc titles, skip the release.  Single-concert
+releases already have correct concert dates from the Wikipedia scraper;
+MusicBrainz's value for those is timing precision, which isn't worth much
+when filed under the wrong year.  Box sets with disc-level dates (the 23
+releases that actually need MusicBrainz) continue to work perfectly.
+
+This is a good example of how a "reasonable fallback" can silently poison
+an entire dataset.  The bug was invisible in the scraper output — every
+release looked correct — but showed up immediately when checking whether
+the data matched real-world constraints (the Dead didn't play after 1995).
+
+Final DB after rebuild: **18,287 releases, 368,484 tracks, 996 songs,
+325 sandwiches.  Zero post-1995 data.**

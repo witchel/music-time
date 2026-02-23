@@ -110,6 +110,38 @@ def _hilbert_points(order):
     return [_d2xy(n, d) for d in range(n * n)]
 
 
+def _chaikin_smooth(xs, ys, iterations=2):
+    """Round corners of a polyline using Chaikin's corner-cutting algorithm.
+
+    Each iteration replaces every segment with two points at 25 % and 75 %,
+    progressively turning sharp turns into smooth arcs.  Two iterations are
+    enough to make a Hilbert curve look organic rather than grid-like.
+    """
+    pts = np.column_stack([xs, ys])
+    for _ in range(iterations):
+        q = 0.75 * pts[:-1] + 0.25 * pts[1:]   # 25 % along each segment
+        r = 0.25 * pts[:-1] + 0.75 * pts[1:]   # 75 % along each segment
+        new_pts = np.empty((2 * len(q), 2))
+        new_pts[0::2] = q
+        new_pts[1::2] = r
+        pts = new_pts
+    return pts[:, 0], pts[:, 1]
+
+
+def _smooth_hilbert(order, iterations=2):
+    """Return a smoothed Hilbert curve normalized to [0, 1].
+
+    The raw integer-grid Hilbert points are normalized, then Chaikin-smoothed.
+    Returns (xs, ys) ready for ``local = margin + arr * span``.
+    """
+    raw = _hilbert_points(order)
+    grid_n = 2 ** order
+    denom = max(grid_n - 1, 1)
+    xs = np.array([p[0] / denom for p in raw])
+    ys = np.array([p[1] / denom for p in raw])
+    return _chaikin_smooth(xs, ys, iterations)
+
+
 def _gosper_points(order):
     """Generate (x, y) points for a Gosper curve (flowsnake) via L-system.
 
@@ -389,10 +421,9 @@ def plot_hilbert(conn):
     n_tiles = len(rows)
     max_dur = durs.max()
 
-    # Pre-compute Hilbert curves at multiple orders.
+    # Pre-compute smoothed Hilbert curves at multiple orders.
     h_orders = [2, 3, 4, 5]
-    curves = {o: _hilbert_points(o) for o in h_orders}
-    grids = {o: 2 ** o for o in h_orders}
+    smooth = {o: _smooth_hilbert(o) for o in h_orders}
 
     # ── Choose order per performance ──
     tile_orders = np.empty(n_tiles, dtype=int)
@@ -430,14 +461,12 @@ def plot_hilbert(conn):
         dur = durs[idx]
         color = cmap(dur_norm(dur))
         order = tile_orders[idx]
-        pts = curves[order]
-        grid_n = grids[order]
+        sx, sy = smooth[order]
 
         margin = 0.04 * size
         span = size - 2 * margin
-        denom = max(grid_n - 1, 1)
-        xs = [ox + margin + (p[0] / denom) * span for p in pts]
-        ys = [oy + margin + (p[1] / denom) * span for p in pts]
+        xs = ox + margin + sx * span
+        ys = oy + margin + sy * span
 
         zorder = 1 + durs[idx] / max_dur
         lw = lw_map[order]
@@ -594,10 +623,9 @@ def plot_hilbert_strip(conn):
     all_durs = np.array([t["dur_min"] for t in tiles])
     max_dur = all_durs.max()
 
-    # Pre-compute Hilbert curves (orders 2-6 to match sunflower plots)
+    # Pre-compute smoothed Hilbert curves (orders 2-6)
     h_orders = [2, 3, 4, 5, 6]
-    curves = {o: _hilbert_points(o) for o in h_orders}
-    grids = {o: 2 ** o for o in h_orders}
+    smooth = {o: _smooth_hilbert(o) for o in h_orders}
 
     # 5-bin system matching sunflower plots
     bins = _duration_bins(all_durs)
@@ -624,15 +652,13 @@ def plot_hilbert_strip(conn):
 
         bini = bins[idx]
         order = bin_to_order[bini]
-        pts = curves[order]
-        grid_n = grids[order]
+        sx, sy = smooth[order]
         margin = 0.04 * size
         span = size - 2 * margin
-        denom = max(grid_n - 1, 1)
 
         # Build local coordinates centered on origin
-        local_x = np.array([-size / 2 + margin + (p[0] / denom) * span for p in pts])
-        local_y = np.array([-size / 2 + margin + (p[1] / denom) * span for p in pts])
+        local_x = -size / 2 + margin + sx * span
+        local_y = -size / 2 + margin + sy * span
 
         # Rotate and translate
         ca, sa = np.cos(rot), np.sin(rot)
@@ -799,10 +825,9 @@ def plot_hilbert_duration(conn):
     n_tiles = len(rows)
     max_dur = durs.max()
 
-    # Pre-compute Hilbert curves at multiple orders
+    # Pre-compute smoothed Hilbert curves at multiple orders
     h_orders = [2, 3, 4, 5, 6]
-    curves = {o: _hilbert_points(o) for o in h_orders}
-    grids = {o: 2 ** o for o in h_orders}
+    smooth = {o: _smooth_hilbert(o) for o in h_orders}
 
     # ── Duration bins → curve order + color ──
     bins = _duration_bins(durs)
@@ -847,16 +872,14 @@ def plot_hilbert_duration(conn):
         bini = bins[idx]
         color = BIN_COLORS[bini]
         order = bin_to_order[bini]
-        pts = curves[order]
-        grid_n = grids[order]
+        sx, sy = smooth[order]
 
         margin = 0.04 * size
         span = size - 2 * margin
-        denom = max(grid_n - 1, 1)
 
         # Build local coordinates centered on origin, then rotate
-        local_x = np.array([-size / 2 + margin + (p[0] / denom) * span for p in pts])
-        local_y = np.array([-size / 2 + margin + (p[1] / denom) * span for p in pts])
+        local_x = -size / 2 + margin + sx * span
+        local_y = -size / 2 + margin + sy * span
         ca, sa = np.cos(rot), np.sin(rot)
         xs = local_x * ca - local_y * sa + cx
         ys = local_x * sa + local_y * ca + cy
@@ -1118,11 +1141,84 @@ def _era_wedge_layout(assigned, tile_sizes, k=0.7,
 
     r_outer = k * np.sqrt(max(era_cumul)) + tile_sizes.max()
 
+    # Resolve overlaps via iterative pairwise repulsion
+    _resolve_overlaps(tile_cx, tile_cy, tile_sizes)
+
+    # Recalculate r_outer after tiles may have shifted outward
+    max_r = np.sqrt(tile_cx ** 2 + tile_cy ** 2) + tile_sizes / 2
+    r_outer = max_r.max()
+
     return tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries
 
 
-def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer, pad=3.5):
-    """Draw radial spokes at era boundaries and horizontal era labels."""
+def _resolve_overlaps(tile_cx, tile_cy, tile_sizes,
+                      iterations=1000, tol=0.01):
+    """Push overlapping tiles apart until no bounding boxes overlap.
+
+    Uses vectorised pairwise repulsion: each overlapping pair generates
+    equal-and-opposite forces proportional to the overlap depth.
+    Modifies tile_cx, tile_cy in place.
+    """
+    min_sep = (tile_sizes[:, None] + tile_sizes[None, :]) / 2
+
+    for _ in range(iterations):
+        dx = tile_cx[:, None] - tile_cx[None, :]
+        dy = tile_cy[:, None] - tile_cy[None, :]
+        dist = np.sqrt(dx ** 2 + dy ** 2)
+        np.fill_diagonal(dist, np.inf)
+
+        overlap = np.maximum(min_sep - dist, 0)
+        max_ovl = overlap.max()
+        if max_ovl < tol:
+            break
+
+        # Unit vectors from j toward i (push i away from j)
+        safe_dist = np.maximum(dist, 1e-6)
+        ux = dx / safe_dist
+        uy = dy / safe_dist
+
+        # Net repulsive force on each tile
+        fx = np.sum(overlap * ux, axis=1)
+        fy = np.sum(overlap * uy, axis=1)
+
+        # Adaptive step: scale so the largest displacement ≈ 40% of worst overlap
+        fmax = max(np.abs(fx).max(), np.abs(fy).max(), 1e-6)
+        step = 0.4 * max_ovl / fmax
+        tile_cx += fx * step
+        tile_cy += fy * step
+
+
+def _label_radius_at_angle(angle, tile_cx, tile_cy, tile_sizes, gap=5.0):
+    """Minimum radius so a point at *angle* clears every tile by *gap*.
+
+    Uses the exact quadratic solution: for a tile at polar (r_i, θ_i)
+    with clearance c_i = size_i/2 + gap, the label at radius R along
+    angle θ satisfies  dist² = R² + r_i² − 2 R r_i cos(Δθ) ≥ c_i².
+    Rearranging gives R ≥ r_i cos(Δθ) + √(c_i² − r_i² sin²(Δθ))
+    for tiles where the discriminant is non-negative (tiles angularly
+    close enough to matter).
+    """
+    clearance = tile_sizes / 2 + gap
+    tile_r = np.sqrt(tile_cx ** 2 + tile_cy ** 2)
+    sin_dt = np.sin(angle - np.arctan2(tile_cy, tile_cx))
+    cos_dt = np.cos(angle - np.arctan2(tile_cy, tile_cx))
+
+    disc = clearance ** 2 - (tile_r * sin_dt) ** 2
+    mask = disc >= 0
+    if not mask.any():
+        return gap
+    return max(float((tile_r[mask] * cos_dt[mask]
+                       + np.sqrt(disc[mask])).max()), gap)
+
+
+def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
+                                tile_cx, tile_cy, tile_sizes, pad=3.5):
+    """Draw radial spokes and era labels just outside the tiles.
+
+    Each label is placed near the upper (start) spoke of its wedge,
+    at the minimum radius that clears all tile bounding boxes by a
+    comfortable margin.
+    """
     r_spoke = r_outer + pad * 0.3
 
     for start, end, name, _, y0, y1 in era_boundaries:
@@ -1131,11 +1227,13 @@ def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer, pad=3.5):
                 [0, r_spoke * np.sin(start)],
                 color="#555577", linewidth=3.0, alpha=0.7, zorder=0.5)
 
-        # Label at middle of wedge, 72% of outer radius — horizontal (no rotation)
-        mid_angle = (start + end) / 2
-        label_r = r_outer * 0.72
-        lx = label_r * np.cos(mid_angle)
-        ly = label_r * np.sin(mid_angle)
+        # Place label near the upper (start) spoke, just outside tiles
+        bias = 0.15  # 15% from start toward center of wedge
+        label_angle = start + bias * (end - start)
+        label_r = _label_radius_at_angle(
+            label_angle, tile_cx, tile_cy, tile_sizes, gap=5.0)
+        lx = label_r * np.cos(label_angle)
+        ly = label_r * np.sin(label_angle)
 
         year_str = f"{y0}–{y1}" if y0 != y1 else str(y0)
         label = f"{name}\n{year_str}"
@@ -1163,10 +1261,9 @@ def plot_hilbert_duration_era(conn):
     n_tiles = len(assigned)
     max_dur = durs.max()
 
-    # Pre-compute Hilbert curves at multiple orders
+    # Pre-compute smoothed Hilbert curves at multiple orders
     h_orders = [2, 3, 4, 5, 6]
-    curves = {o: _hilbert_points(o) for o in h_orders}
-    grids = {o: 2 ** o for o in h_orders}
+    smooth = {o: _smooth_hilbert(o) for o in h_orders}
 
     # Duration bins → curve order + color
     bins = _duration_bins(durs)
@@ -1191,7 +1288,8 @@ def plot_hilbert_duration_era(conn):
     ax.set_facecolor("#1a1a2e")
 
     # Draw era spokes and labels
-    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer)
+    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
+                                tile_cx, tile_cy, tile_sizes)
 
     # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
@@ -1204,16 +1302,14 @@ def plot_hilbert_duration_era(conn):
         bini = bins[idx]
         color = BIN_COLORS[bini]
         order = bin_to_order[bini]
-        pts = curves[order]
-        grid_n = grids[order]
+        sx, sy = smooth[order]
 
         margin = 0.04 * size
         span = size - 2 * margin
-        denom = max(grid_n - 1, 1)
 
         # Build local coordinates centered on origin, then rotate
-        local_x = np.array([-size / 2 + margin + (p[0] / denom) * span for p in pts])
-        local_y = np.array([-size / 2 + margin + (p[1] / denom) * span for p in pts])
+        local_x = -size / 2 + margin + sx * span
+        local_y = -size / 2 + margin + sy * span
         ca, sa = np.cos(rot), np.sin(rot)
         xs = local_x * ca - local_y * sa + cx
         ys = local_x * sa + local_y * ca + cy
@@ -1348,7 +1444,8 @@ def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
     ax.set_facecolor("#1a1a2e")
 
     # Draw era spokes and labels
-    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer)
+    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
+                                tile_cx, tile_cy, tile_sizes)
 
     # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])

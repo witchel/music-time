@@ -5,6 +5,7 @@ description = "Grateful Dead Song Timings Database"
 requires-python = ">=3.12"
 dependencies = [
     "requests",
+    "musicbrainzngs",
 ]
 
 [project.scripts]

@@ -1,5 +1,9 @@
 """Wikipedia scraper for Grateful Dead live releases.
 
+Wikipedia is used for release discovery and coverage classification metadata.
+MusicBrainz (musicbrainz.py) is the authoritative source for timing data.
+Wikipedia timing data serves as a fallback for releases not yet in MusicBrainz.
+
 Scraping pipeline:
 1. Enumerate releases via Wikipedia category API
 2. Fetch rendered HTML for each album page

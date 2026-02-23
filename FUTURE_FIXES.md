@@ -4,7 +4,7 @@ Known issues and improvements for future scrapes and schema changes.
 
 ## 1. Parse set_name from archive.org filenames
 
-**Impact: High** — fills 99.3% empty `set_name` values (currently only 2,543 / 367,933 tracks have set info, all from Wikipedia).
+**Impact: High** — fills 99.3% empty `set_name` values (currently only 2,543 / 367,933 tracks have set info, from Wikipedia and MusicBrainz).
 
 Archive.org filenames often encode disc/set information:
 - `gd1977-05-08d1t01.shn` — disc 1, track 1 (typically Set 1)
@@ -60,7 +60,11 @@ The European shows (England, Germany, France, etc.) are well-known tour legs (Eu
 
 **Impact: Medium** — some archive.org tracks have incorrect `length` metadata.
 
-The `is_outlier` flag in `tracks` exists but is only populated by `gdtimings analyze`. A pre-filter in viz queries (e.g., `WHERE t.is_outlier = 0`) would improve data quality, but requires running `analyze` after scraping.
+The `is_outlier` flag in `tracks` is populated by `gdtimings analyze`. Outlier
+flags are **informational only** — `best_performances` does not filter on
+`is_outlier` because the 3-sigma threshold excludes genuine long performances
+(e.g., ~46-min PITB from 1974-05-21). The flags are useful for data-quality
+auditing but should not be used in visualization filters.
 
 Consider adding a basic sanity check in `_extract_tracks()`:
 - Flag tracks < 10 seconds (likely applause/tuning fragments)
@@ -70,7 +74,7 @@ Consider adding a basic sanity check in `_extract_tracks()`:
 
 **Impact: Medium** — the `segue` column in tracks is 0 for all archive.org data.
 
-Archive.org filenames sometimes indicate segues via `>` in titles (e.g., "Dark Star > St. Stephen"). Parsing this would enable segue analysis across the full dataset, not just Wikipedia releases.
+Archive.org filenames sometimes indicate segues via `>` in titles (e.g., "Dark Star > St. Stephen"). Parsing this would enable segue analysis across the full dataset, not just official releases.
 
 ## 6. Song alias consolidation
 

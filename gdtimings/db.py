@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     track_number    INTEGER,
     set_name        TEXT,
     duration_seconds REAL,
+    sandwich_duration REAL,
     writers         TEXT,
     segue           INTEGER DEFAULT 0,
     is_outlier      INTEGER DEFAULT 0,
@@ -75,8 +76,9 @@ CREATE TABLE IF NOT EXISTS scrape_state (
 );
 
 -- Deduplicated per-show view: one row per (song, concert_date), using the
--- best available release (highest quality_rank).  MAX(duration_seconds) within
--- each release handles split songs (e.g. Dark Star V1/V2).
+-- best available release (highest quality_rank, breaking ties by longest
+-- duration).  Prefers sandwich_duration (summed Drums-sandwich segments)
+-- when available; falls back to raw duration_seconds.
 -- all_performances keeps every row (for debugging / analysis);
 -- best_performances filters to clean data for visualizations.
 CREATE VIEW IF NOT EXISTS all_performances AS
@@ -97,10 +99,11 @@ FROM (
            t.set_name,
            r.coverage,
            MAX(t.is_outlier) AS is_outlier,
-           MAX(t.duration_seconds) AS max_dur,
+           MAX(COALESCE(NULLIF(t.sandwich_duration, 0), t.duration_seconds)) AS max_dur,
            ROW_NUMBER() OVER (
                PARTITION BY t.song_id, r.concert_date
-               ORDER BY r.quality_rank DESC
+               ORDER BY r.quality_rank DESC,
+                        MAX(COALESCE(NULLIF(t.sandwich_duration, 0), t.duration_seconds)) DESC
            ) AS rn
     FROM tracks t
     JOIN songs s ON t.song_id = s.id
@@ -117,8 +120,7 @@ SELECT song_id, song, concert_date, concert_year, concert_month,
        state, set_name, duration_seconds, dur_min
 FROM all_performances
 WHERE song_type = 'song'
-  AND coverage IN ('complete', 'unedited')
-  AND is_outlier = 0;
+  AND coverage IN ('complete', 'unedited');
 """
 
 

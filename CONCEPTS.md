@@ -10,7 +10,7 @@ pipeline.
 
 A single song can appear under many different names across releases:
 
-| Canonical name | Variants seen on Wikipedia |
+| Canonical name | Common variants |
 |---|---|
 | Playing in the Band | Playin' in the Band, Playin in the Band |
 | Going Down the Road Feeling Bad | Goin' Down the Road Feelin' Bad, GDTRFB |
@@ -41,13 +41,10 @@ need a manual alias added to `CANONICAL_SONGS`.
 
 ---
 
-## 2. Split Songs and Reprises
-
-**This is the most important unsolved problem in the current codebase.**
+## 2. Split Songs, Reprises, and Drums Sandwiches
 
 The Grateful Dead frequently split a song across a show, performing part of it
-in one slot and returning to it later. For timing purposes, these segments
-must be **summed per show** to get the total time spent on the song.
+in one slot and returning to it later.
 
 ### Two kinds of "split" — and they need opposite treatment
 
@@ -71,68 +68,43 @@ independent timing statistics.
 For these, the normalizer should resolve each to its own canonical name. "PITB
 Reprise" is not "PITB" — it's its own song.
 
-#### Category B: Same song, multiple segments — aggregate per show
+#### Category B: Drums sandwiches — sum segments
 
-These are a single song that gets interrupted (usually by Drums > Space) and
-resumed later. The segments are **labeled parts of one performance** and their
-durations must be **summed per show** to get the total time.
+A "Drums sandwich" occurs when a song is interrupted by a contiguous
+Drums/Space sequence and then resumes:
 
-| Song | How segments appear | Notes |
-|---|---|---|
-| Dark Star | "Dark Star" ... Drums > Space ... "Dark Star" | Sometimes labeled V1/V2 or "verse 1"/"verse 2". A show with two 10-minute segments = 20 minutes of Dark Star. |
-| The Other One | "The Other One" ... Drums > Space ... "The Other One" | Same pattern as Dark Star. |
-| Playing in the Band | Rarely: PITB ... other songs ... PITB (not "Reprise") | When the same title appears twice without "Reprise", the segments should be summed. |
+    PITB (20 min) → Drums (10 min) → Space (5 min) → PITB (15 min)
 
-### What "20 minutes of Dark Star" means
+The total PITB duration for this show is **35 minutes** (20 + 15), not 20.
 
-If a show has:
-- Track 5: "Dark Star" — 10:32
-- Track 9: "Dark Star" — 9:48
+`detect_sandwiches()` in `analyze.py` scans each release's ordered tracklist
+for this pattern. When found, it writes:
+- `sandwich_duration = sum of all segments` on the **first** segment's track
+- `sandwich_duration = 0` on continuation segments (excluded from MAX/SUM)
 
-The **per-show duration** of Dark Star is **20:20**, not two separate 10-minute
-data points. Currently, `analyze.py` treats each track row as an independent
-sample, which **understates** typical song durations for split songs and
-**overstates** the number of times played.
+The `all_performances` view and `_per_show_durations()` both prefer
+`sandwich_duration` via `COALESCE(NULLIF(t.sandwich_duration, 0), t.duration_seconds)`.
 
-### Segment label normalization
+**Scope**: Only contiguous Drums/Space interruptions count. If a different song
+intervenes between the two appearances (Song X → Other Song → Song X), that's
+a reprise (Category A), not a sandwich.
 
-The scraper needs to recognize that labeled segments all resolve to the
-**same canonical song** so they can be aggregated:
+#### Category C: Segment labels — same song, already handled
 
-- `"Dark Star V1"`, `"Dark Star V2"` → Dark Star
-- `"Dark Star (verse 1)"` → Dark Star
-- `"The Other One (Part 2)"` → The Other One
-- `"Dark Star (continued)"` → Dark Star
+Labeled segments like "Dark Star V1" / "Dark Star V2" all resolve to the same
+canonical song via `clean_title()` stripping (`V1`, `V2`, `verse N`, `Part N`,
+`continued`). Within a single release, `MAX(duration_seconds)` picks the
+longest segment. If they form a Drums sandwich, `detect_sandwiches()` sums
+them instead.
 
-These suffixes (`V1`, `V2`, `verse N`, `Part N`, `continued`) should be
-stripped in `clean_title` before alias matching. Contrast with "Reprise"
-which should **not** be stripped — it indicates a distinct song (Category A).
-
-### How to fix analysis
-
-The analysis layer should aggregate Category B durations by (song_id,
-release_id) before computing statistics:
-
-```sql
--- Per-show total duration for each song
-SELECT song_id, release_id,
-       SUM(duration_seconds) AS show_duration,
-       COUNT(*)              AS segment_count
-FROM tracks
-WHERE duration_seconds IS NOT NULL
-GROUP BY song_id, release_id
-```
-
-Songs with `segment_count > 1` are split performances. The `show_duration` is
-the meaningful number for timing statistics. Category A songs (PITB vs PITB
-Reprise) already have different `song_id` values, so the GROUP BY naturally
-keeps them separate — no special handling needed.
+Contrast with "Reprise" which should **not** be stripped — it indicates a
+distinct song (Category A).
 
 ### Why outlier detection order matters
 
-Outlier detection should run **after** per-show aggregation. Without
-aggregation, every 10-minute Dark Star segment looks like an anomaly compared
-to full 25-minute performances.
+Outlier detection runs **after** sandwich detection and per-show aggregation.
+Without aggregation, every 10-minute Dark Star segment looks like an anomaly
+compared to full 25-minute performances.
 
 ---
 
@@ -179,8 +151,7 @@ canonical entries and their combined listings need to be split or excluded.
 ## 5. Complete Shows vs Edited Releases
 
 The `coverage` column on the `releases` table classifies each release into
-one of three tiers for timing reliability. This is stored at scrape time
-based on the Wikipedia category and per-release overrides in `config.py`.
+one of three tiers for timing reliability.
 
 ### Coverage tiers
 
@@ -193,17 +164,20 @@ based on the Wikipedia category and per-release overrides in `config.py`.
 
 ### How coverage is determined
 
-The scraper resolves coverage in two steps (see `scrape_album` in
-`wikipedia.py`):
+Coverage is assigned at scrape time from two sources:
 
+**Wikipedia** (discovery + coverage metadata):
 1. **Per-release override** — `RELEASE_COVERAGE_OVERRIDES` in `config.py`
    maps specific Wikipedia page titles to a coverage value. This handles
    one-off releases in the catch-all `Grateful Dead live albums` category.
 2. **Category default** — `CATEGORY_COVERAGE` maps each Wikipedia category
    to a default. Dick's Picks, Dave's Picks, and Download Series default to
-   `complete`. Road Trips defaults to `unedited` (songs are unedited but
-   often compiled from multiple shows). The catch-all live albums category
-   defaults to `unknown`.
+   `complete`. Road Trips defaults to `unedited`. The catch-all live albums
+   category defaults to `unknown`.
+
+**MusicBrainz** (timing data):
+- `MUSICBRAINZ_SERIES_COVERAGE` in `config.py` maps series names to coverage
+  values, mirroring the Wikipedia category defaults.
 
 ### Why "unedited" matters
 
@@ -223,12 +197,6 @@ Phil Zone* is just as reliable as one from a Dick's Picks complete show.
 The key question is whether the **individual song** is unedited, not whether
 the release presents a complete concert.
 
-### Future sources
-
-Wikipedia is the first data source, but others (e.g., Internet Archive) will
-follow. Each source will need its own coverage classification. The `coverage`
-column applies at the release level regardless of source.
-
 ### Impact on analysis
 
 For computing consensus song durations, only `complete` and `unedited`
@@ -236,35 +204,81 @@ releases should be used. An edited "Dark Star" from *Live/Dead* (16 minutes,
 but originally 23+ minutes) would pull the median down. The analysis layer
 should filter: `WHERE coverage IN ('complete', 'unedited')`.
 
-## 6. Recording Sources and Quality
+## 6. Data Sources and Quality
 
-Not all duration data is equally trustworthy:
+The pipeline uses three data sources, scraped in order. Each fills a
+different role.
 
-| Source | Quality | Notes |
+### Source hierarchy
+
+| Source | `source_type` | `quality_rank` | Role |
+|---|---|---|---|
+| **Wikipedia** | `wikipedia` | 500 | Release discovery, coverage metadata, timing for single-concert releases |
+| **MusicBrainz** | `musicbrainz` | 500 | **Authoritative timing data** for official releases — millisecond precision, per-disc concert dates for box sets |
+| **Archive.org** | `archive` | 100–300 | Audience/SBD recordings for shows without official releases |
+
+### Why MusicBrainz is the timing authority
+
+MusicBrainz has structured, machine-readable data for every official Grateful
+Dead release:
+- Millisecond-precision durations on every track (vs Wikipedia's inconsistent
+  HTML tracklist parsing)
+- Concert dates embedded in disc/media titles for box sets (Wikipedia often
+  stores a single release with NULL `concert_date`)
+- Series endpoints for systematic enumeration (Dick's Picks, Dave's Picks)
+- Standalone box set support via `MUSICBRAINZ_STANDALONE_RELEASES` — six major
+  multi-concert box sets (Pacific Northwest '73-'74, Fillmore West 1969,
+  July 1978, Winterland June 1977, May 1977, Giants Stadium) that aren't in
+  any MusicBrainz series are scraped by release group MBID
+
+Wikipedia remains valuable for:
+- **Release discovery** — enumerating the catalog of official releases
+- **Coverage classification** — `RELEASE_COVERAGE_OVERRIDES` and
+  `CATEGORY_COVERAGE` are keyed to Wikipedia page titles/categories
+- **Timing fallback** — single-concert releases where MusicBrainz hasn't been
+  scraped yet
+
+### Pipeline order
+
+1. `--source wikipedia` — discovers releases, assigns coverage, inserts timing
+   data as a baseline
+2. `--source musicbrainz` — adds/overrides with authoritative timing data,
+   splits box sets into per-concert-date releases
+3. `--source archive` — adds audience/SBD recordings (lower quality_rank)
+
+When both Wikipedia and MusicBrainz provide timing for the same concert date,
+the `ROW_NUMBER()` tiebreaker picks the release with the longer duration,
+which is typically the MusicBrainz entry (millisecond precision vs rounded
+Wikipedia times).
+
+### Quality ranks
+
+The `quality_rank` field supports filtering and tiebreaking:
+
+| Rank | Type | Notes |
 |---|---|---|
-| Dick's Picks | High | Official release, professionally mastered, times from liner notes |
-| Dave's Picks | High | Same as Dick's Picks |
-| Road Trips | High | Official multi-disc releases |
-| Download Series | High | Official digital releases |
-| Other live albums | Medium | May be compilations or partial shows |
-
-The `quality_rank` field in `releases` (500 = official) supports filtering.
-When computing consensus timings, higher-quality sources should be preferred,
-or at minimum the source quality should be available for weighting.
+| 500 | Official (Wikipedia, MusicBrainz) | Professionally mastered, most trustworthy |
+| 300 | SBD (Archive.org soundboard) | Good quality, may have tape issues |
+| 200 | MTX (Archive.org matrix) | Audience + soundboard blend |
+| 100 | AUD (Archive.org audience) | Variable quality |
 
 ---
 
 ## 7. Multi-Night Runs
 
 Many releases cover multiple nights at the same venue (e.g., "three nights at
-the Fillmore"). These may appear as:
-- One Wikipedia page per night (separate releases) — ideal
-- One page covering all nights (single release, multiple discs) — disc numbers
-  map to nights
+the Fillmore"). These appear differently depending on the source:
 
-The `concert_date` field captures the first date from the "Recorded" infobox
-field. For multi-night releases, this means all tracks get the same date, which
-is imprecise but usually acceptable for timing analysis.
+**Wikipedia**: May appear as one page per night (separate releases — ideal) or
+one page covering all nights (single release). In the latter case, the
+`concert_date` captures only the first date from the "Recorded" infobox, so
+all tracks get the same date.
+
+**MusicBrainz**: Multi-night box sets have per-disc titles with embedded dates
+(e.g., "Winterland Arena - 12/31/78"). The MusicBrainz scraper parses these
+and creates **one release record per concert date**, solving the Wikipedia
+single-date problem. This is the primary motivation for using MusicBrainz as
+the timing authority for box sets.
 
 ---
 
@@ -277,6 +291,13 @@ is imprecise but usually acceptable for timing analysis.
 - **Genuinely unusual performances** — a 5-minute "Dark Star" or a 30-minute
   "Playing in the Band"
 
-Outlier detection should run **after** split-song aggregation (see section 2),
-since a single segment of a split song will look anomalously short compared to
-full performances.
+Outlier detection runs **after** sandwich detection and per-show aggregation
+(see section 2), since a single segment of a split song will look anomalously
+short compared to full performances.
+
+**Important**: The `best_performances` view does **not** filter on
+`is_outlier`. Outlier flags are retained in the `tracks` and
+`all_performances` tables for data-quality analysis, but genuine long
+performances (e.g., the ~46-minute PITB from 1974-05-21) must not be excluded
+from visualizations. The 3-sigma threshold is too aggressive for songs with
+high natural variability.

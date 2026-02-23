@@ -5,7 +5,9 @@ import statistics
 import pytest
 
 from gdtimings import db
-from gdtimings.analyze import classify_song_types, compute_song_stats, _per_show_durations
+from gdtimings.analyze import (
+    classify_song_types, compute_song_stats, detect_sandwiches, _per_show_durations,
+)
 from tests.conftest import make_release, make_track
 
 
@@ -251,8 +253,8 @@ class TestClassifySongTypes:
         rows = conn.execute("SELECT song FROM best_performances").fetchall()
         assert len(rows) == 0
 
-    def test_best_performances_excludes_outliers(self, conn):
-        """best_performances view should not include outlier tracks."""
+    def test_best_performances_includes_outliers(self, conn):
+        """best_performances view should include outlier tracks (outlier filter removed)."""
         song_id = db.get_or_create_song(conn, "Dark Star")
         conn.commit()
 
@@ -269,7 +271,9 @@ class TestClassifySongTypes:
         conn.commit()
 
         rows = conn.execute("SELECT song FROM best_performances").fetchall()
-        assert len(rows) == 0
+        # Outlier tracks are now included in best_performances
+        assert len(rows) == 1
+        assert rows[0]["song"] == "Dark Star"
 
     def test_best_performances_includes_clean(self, conn):
         """best_performances should include complete, non-utility, non-outlier tracks."""
@@ -319,3 +323,108 @@ class TestClassifySongTypes:
 
         rows = conn.execute("SELECT song FROM best_performances").fetchall()
         assert len(rows) == 1
+
+
+class TestDetectSandwiches:
+    """Tests for Drums/Space sandwich detection."""
+
+    def _setup_sandwich(self, conn):
+        """Create a release with a PITB → Drums → Space → PITB sandwich."""
+        pitb_id = db.get_or_create_song(conn, "Playing in the Band")
+        drums_id = db.get_or_create_song(conn, "Drums")
+        space_id = db.get_or_create_song(conn, "Space")
+        conn.commit()
+        classify_song_types(conn, verbose=False)
+
+        rid = make_release(conn, source_id="r1", concert_date="1974-05-21")
+        make_track(conn, release_id=rid, song_id=pitb_id, duration=1200, track_num=1)
+        make_track(conn, release_id=rid, song_id=drums_id, duration=600, track_num=2)
+        make_track(conn, release_id=rid, song_id=space_id, duration=300, track_num=3)
+        make_track(conn, release_id=rid, song_id=pitb_id, duration=900, track_num=4)
+        conn.commit()
+        return pitb_id, rid
+
+    def test_basic_sandwich(self, conn):
+        """PITB → Drums → Space → PITB should sum to 2100."""
+        pitb_id, rid = self._setup_sandwich(conn)
+        found = detect_sandwiches(conn, verbose=False)
+        assert found == 1
+
+        # First segment gets the total
+        t1 = conn.execute(
+            "SELECT sandwich_duration FROM tracks WHERE release_id = ? AND track_number = 1",
+            (rid,),
+        ).fetchone()
+        assert t1["sandwich_duration"] == 2100  # 1200 + 900
+
+        # Continuation segment gets 0
+        t4 = conn.execute(
+            "SELECT sandwich_duration FROM tracks WHERE release_id = ? AND track_number = 4",
+            (rid,),
+        ).fetchone()
+        assert t4["sandwich_duration"] == 0
+
+    def test_no_sandwich_without_drums(self, conn):
+        """Song appearing twice without Drums/Space between is not a sandwich."""
+        pitb_id = db.get_or_create_song(conn, "Playing in the Band")
+        other_id = db.get_or_create_song(conn, "Dark Star")
+        db.get_or_create_song(conn, "Drums")  # needed for detect_sandwiches to run
+        db.get_or_create_song(conn, "Space")
+        conn.commit()
+        classify_song_types(conn, verbose=False)
+
+        rid = make_release(conn, source_id="r1", concert_date="1974-05-21")
+        make_track(conn, release_id=rid, song_id=pitb_id, duration=1200, track_num=1)
+        make_track(conn, release_id=rid, song_id=other_id, duration=600, track_num=2)
+        make_track(conn, release_id=rid, song_id=pitb_id, duration=900, track_num=3)
+        conn.commit()
+
+        found = detect_sandwiches(conn, verbose=False)
+        assert found == 0
+
+        # Both tracks should have NULL sandwich_duration
+        rows = conn.execute(
+            "SELECT sandwich_duration FROM tracks WHERE release_id = ? ORDER BY track_number",
+            (rid,),
+        ).fetchall()
+        assert all(r["sandwich_duration"] is None for r in rows)
+
+    def test_sandwich_in_per_show_durations(self, conn):
+        """_per_show_durations should use sandwich_duration when available."""
+        pitb_id, _ = self._setup_sandwich(conn)
+        detect_sandwiches(conn, verbose=False)
+
+        data = _per_show_durations(conn)
+        assert pitb_id in data
+        # Should be the sandwiched total (2100), not MAX of segments (1200)
+        assert data[pitb_id][0][1] == 2100
+
+    def test_sandwich_in_view(self, conn):
+        """all_performances view should reflect sandwich durations."""
+        pitb_id2, _ = self._setup_sandwich(conn)
+        detect_sandwiches(conn, verbose=False)
+
+        row = conn.execute(
+            "SELECT duration_seconds, dur_min FROM all_performances WHERE song_id = ?",
+            (pitb_id2,),
+        ).fetchone()
+        assert row["duration_seconds"] == 2100
+        assert abs(row["dur_min"] - 35.0) < 0.01
+
+    def test_tiebreaker_picks_longer(self, conn):
+        """When two releases share quality_rank, pick the one with longer duration."""
+        song_id = db.get_or_create_song(conn, "Dark Star")
+        conn.commit()
+
+        rid1 = make_release(conn, source_id="r1", concert_date="1974-05-21",
+                            quality_rank=100)
+        make_track(conn, release_id=rid1, song_id=song_id, duration=1600, track_num=1)
+
+        rid2 = make_release(conn, source_id="r2", concert_date="1974-05-21",
+                            quality_rank=100)
+        make_track(conn, release_id=rid2, song_id=song_id, duration=2700, track_num=1)
+        conn.commit()
+
+        data = _per_show_durations(conn)
+        # Should pick the 2700 release (tiebreaker by duration)
+        assert data[song_id][0][1] == 2700

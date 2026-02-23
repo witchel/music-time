@@ -8,7 +8,7 @@ DB_PATH = os.path.join(DB_DIR, "gdtimings.db")
 ARCHIVE_CACHE_DIR = os.path.join(DB_DIR, "cache")
 ARCHIVE_DEFAULT_WORKERS = 64
 
-# ── Wikipedia API ──────────────────────────────────────────────────────
+# ── Wikipedia API (release discovery + coverage metadata) ─────────────
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 WIKIPEDIA_USER_AGENT = "GDTimingsBot/1.0 (Grateful Dead song timings research)"
 WIKIPEDIA_RATE_LIMIT = 1.0  # seconds between requests
@@ -30,7 +30,8 @@ WIKIPEDIA_CATEGORIES = [
 #   "edited"  — songs may be trimmed/overdubbed/faded (exclude from timing)
 #   "unknown" — not yet classified
 
-# Default coverage by Wikipedia category.
+# Default coverage by Wikipedia category (used for release discovery and
+# coverage metadata; MusicBrainz is the authoritative timing source).
 CATEGORY_COVERAGE = {
     "Category:Dick's Picks albums": "complete",
     "Category:Dave's Picks albums": "complete",
@@ -87,6 +88,40 @@ RELEASE_COVERAGE_OVERRIDES = {
     "The Grateful Dead Movie Soundtrack": "edited",
     "Ready or Not (Grateful Dead album)": "edited",
     "Go to Nassau": "unedited",  # only Drums is edited
+}
+
+# ── MusicBrainz (authoritative timing source for official releases) ───
+MUSICBRAINZ_ARTIST_ID = "6faa7ca7-0d99-4a5e-bfa6-1fd5037520c6"  # Grateful Dead
+MUSICBRAINZ_RATE_LIMIT = 1.0  # seconds between requests (MB policy)
+
+# Series MBIDs for systematic enumeration of official releases.
+# All are release group series on MusicBrainz.
+MUSICBRAINZ_SERIES_IDS = {
+    "Dick's Picks": "972d3352-0a10-4a3a-9c89-c0444c000d1a",
+    "Dave's Picks": "9c50cb94-967a-4747-976e-cc61bd621f37",
+    "Road Trips": "098710be-5412-4914-9243-956c82cf2f30",
+    "Download Series": "c3d80fe0-f74e-48ea-96cc-ba7c384a2744",
+    "Europe '72: The Complete Recordings": "ce8adb72-377d-4b70-aa18-22b0dc1b5dfe",
+}
+
+# Coverage classification for MusicBrainz series — mirrors CATEGORY_COVERAGE.
+MUSICBRAINZ_SERIES_COVERAGE = {
+    "Dick's Picks": "complete",
+    "Dave's Picks": "complete",
+    "Road Trips": "unedited",
+    "Download Series": "complete",
+    "Europe '72: The Complete Recordings": "complete",
+}
+
+# Standalone box sets not in any MusicBrainz series.
+# Key = release group MBID, value = coverage tier.
+MUSICBRAINZ_STANDALONE_RELEASES = {
+    "a2d4652b-0cfc-340d-baa1-5db355769f1e": "complete",  # Fillmore West 1969
+    "282a8755-cf19-42e9-ac3e-ddc05e101b1c": "complete",  # Winterland June 1977
+    "aa3370c2-99a9-4c2c-a0be-f870b887aee5": "complete",  # May 1977: Get Shown the Light
+    "399df1ca-f362-4dd5-87c7-e5b15497faa3": "complete",  # July 1978
+    "d0249401-6a5f-468d-997a-fa2a8b0fca46": "complete",  # Giants Stadium 1987, 1989, 1991
+    "221e9122-e43e-46fa-881b-34357902acae": "complete",  # Pacific Northwest '73-'74
 }
 
 # ── Internet Archive ──────────────────────────────────────────────────

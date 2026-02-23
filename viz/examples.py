@@ -317,16 +317,30 @@ def _strip_layout(year_data, max_strip_width=50.0,
                     * (max_size - min_size)) * size_scale
             tile_infos.append((p, size))
 
-        # Greedily fill rows left-to-right; wrap when next tile exceeds width
-        rows = [[]]
-        row_widths = [0.0]
-        for item in tile_infos:
-            slot = item[1] * pad
-            if row_widths[-1] + slot > max_strip_width and rows[-1]:
-                rows.append([])
-                row_widths.append(0.0)
-            rows[-1].append(item)
-            row_widths[-1] += slot
+        # Balanced row splitting: determine how many rows are needed,
+        # then distribute tiles so row widths are as equal as possible.
+        slot_widths = [s * pad for _, s in tile_infos]
+        total_w = sum(slot_widths)
+
+        if total_w <= max_strip_width:
+            rows = [list(tile_infos)]
+        else:
+            n_rows = max(2, -(-int(total_w) // int(max_strip_width)))
+            target_w = total_w / n_rows
+
+            rows = [[]]
+            row_w = 0.0
+            for i, item in enumerate(tile_infos):
+                sw = slot_widths[i]
+                remaining_rows = n_rows - len(rows)
+                # Start a new row if adding this tile moves us further
+                # from the target AND there are rows left to fill
+                if (rows[-1] and remaining_rows > 0
+                        and abs(row_w + sw - target_w) > abs(row_w - target_w)):
+                    rows.append([])
+                    row_w = 0.0
+                rows[-1].append(item)
+                row_w += sw
 
         # Place tiles
         yr_y_top = y_cursor
@@ -364,7 +378,7 @@ def _strip_layout(year_data, max_strip_width=50.0,
     return tiles, strip_bounds, (x_min, x_max, y_min, y_max)
 
 
-def _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years):
+def _draw_strip_decorations(ax, strip_bounds, fig_bounds):
     """Draw year labels and separator lines between consecutive years."""
     x_label = fig_bounds[0] + 0.5
 
@@ -637,8 +651,7 @@ def plot_hilbert_strip(conn):
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
-    all_years = sorted(year_data.keys())
-    _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
+    _draw_strip_decorations(ax, strip_bounds, fig_bounds)
 
     # Draw tiles chronologically, connecting consecutive tiles in same row
     prev_end = None
@@ -745,8 +758,7 @@ def plot_gosper_strip(conn):
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
-    all_years = sorted(year_data.keys())
-    _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
+    _draw_strip_decorations(ax, strip_bounds, fig_bounds)
 
     # Draw tiles chronologically, connecting consecutive tiles in same row
     prev_end = None

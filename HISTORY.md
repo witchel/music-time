@@ -197,3 +197,46 @@ between bins more immediately legible, at the cost of a slightly more
 mechanical aesthetic.
 
 All four sunflower plots (06–09) now use aligned tiles.
+
+---
+
+## 2026-02-23 (cont.) — Era wedge clamping + legend overhaul
+
+**Area-weighted wedges were a dead end.**  The first attempt at era
+segmentation allocated angular wedge space proportional to total tile
+*area* per era.  This gave Peak Jams (which has a single 47-minute
+Gigantous tile = 49 Seedlings in area) roughly 12× the angular space
+of Genesis.  Result: a vast sparse wedge with tiles flung far outward.
+Reverted to count-based wedge allocation where each era gets angular
+space proportional to its number of performances.
+
+**Margin-aware angular clamping** was the key fix for tiles leaking
+across era boundaries.  The original clamp constrained tile *centers*
+to the wedge, but tiles have physical size — a tile with side=7 at
+radius=20 subtends ~0.35 radians.  Clamping only the center lets half
+the tile visually intrude into the adjacent era.  The fix shrinks each
+tile's allowed angular range by `(tile_size/2) / r`, so the tile's
+*visual edge* just reaches the boundary.  At small radii this margin is
+large (tiles are big relative to the circle); at large radii it shrinks.
+
+**Tangential damping** (0.7) complements the margin-aware clamping.
+The overlap resolver's repulsive forces are decomposed into radial and
+tangential components; the tangential component is scaled by 0.7.  This
+biases overlap resolution toward radial spreading while still allowing
+enough tangential force for tiles near boundaries to slide inward.
+
+**Power-law tile sizing** (`(dur/max)^0.75`) replaced the linear mapping
+to compress the extreme outlier — the 47-minute PITB is 48% longer than
+the 31.7-minute runner-up, which with linear side mapping made its *area*
+2.2× larger.  The power-law shrinks the ratio while preserving monotonic
+ordering.  This fixed the detached Gigantous tile at the bottom of the
+Gosper sunflower (plot 07) that the overlap resolver kept ejecting.
+
+**Legend cleanup** across all plots:
+- Removed redundant "gigantous jams on the rim" and "longest at center"
+  notes (visually obvious from the layout)
+- Removed the era legend row from plots 08/09 (spoke labels already show
+  era names and year ranges)
+- Added performance counts to subtitles ("626 performances")
+- Standardized subtitle to "tile area proportional to performance length"
+- Increased legend font sizes (duration: 11→14, streamgraph: 7→10)

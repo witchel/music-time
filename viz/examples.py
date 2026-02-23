@@ -845,18 +845,16 @@ def _plot_duration_sunflower(conn, curve_type="hilbert", mobile=False):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    if not mobile:
-        curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
-        ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower\n"
-                     f"{n_tiles} performances  ·  "
-                     f"tile area proportional to performance length",
-                     fontsize=15, pad=14, color=LABEL_COLOR)
+    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower\n"
+                 f"{n_tiles} performances  ·  "
+                 f"tile area proportional to performance length",
+                 fontsize=15, pad=14, color=LABEL_COLOR)
 
     if mobile:
-        fig.subplots_adjust(top=0.90)
-        _add_duration_legend(ax, durs, fontsize=20, ncol=3,
-                             bbox_to_anchor=(0.5, 1.03),
-                             handleheight=1.5, handlelength=2.0)
+        fig.subplots_adjust(top=0.88)
+        _add_duration_legend(ax, durs, fontsize=11, ncol=3,
+                             bbox_to_anchor=(0.5, 1.02))
         base = _CURVE_FILENAMES[("duration", curve_type)]
         fname = base.replace(".png", "_mobile.png")
         _save_plot(fig, fname, dpi=100)
@@ -1248,20 +1246,18 @@ def _plot_duration_era(conn, curve_type="hilbert",
     ax.set_aspect("equal")
     ax.axis("off")
 
-    if not mobile:
-        curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
-        subtitle = (f"{n_tiles} performances  ·  "
-                    f"tile area proportional to performance length")
-        ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
-                     f"{subtitle}",
-                     fontsize=15, pad=14, color=LABEL_COLOR)
+    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+    subtitle = (f"{n_tiles} performances  ·  "
+                f"tile area proportional to performance length")
+    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
+                 f"{subtitle}",
+                 fontsize=15, pad=14, color=LABEL_COLOR)
 
     # Duration legend
     if mobile:
-        fig.subplots_adjust(top=0.90)
-        _add_duration_legend(ax, durs, fontsize=20, ncol=3,
-                             bbox_to_anchor=(0.5, 1.03),
-                             handleheight=1.5, handlelength=2.0)
+        fig.subplots_adjust(top=0.88)
+        _add_duration_legend(ax, durs, fontsize=11, ncol=3,
+                             bbox_to_anchor=(0.5, 1.02))
     else:
         _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 

@@ -1227,9 +1227,14 @@ def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
                 [0, r_spoke * np.sin(start)],
                 color="#555577", linewidth=3.0, alpha=0.7, zorder=0.5)
 
-        # Place label near the upper (start) spoke, just outside tiles
-        bias = 0.15  # 15% from start toward center of wedge
-        label_angle = start + bias * (end - start)
+        # Place label near the visually higher spoke (larger y = sin).
+        # Wedges go counter-clockwise from -π/2 (bottom), so "start" is
+        # NOT always the upper boundary — depends on where the wedge sits.
+        bias = 0.15
+        if np.sin(start) >= np.sin(end):
+            label_angle = start + bias * (end - start)
+        else:
+            label_angle = end - bias * (end - start)
         label_r = _label_radius_at_angle(
             label_angle, tile_cx, tile_cy, tile_sizes, gap=5.0)
         lx = label_r * np.cos(label_angle)

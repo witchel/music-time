@@ -142,9 +142,6 @@ def _gosper_points(order):
 BIN_COLORS = ["#FFFFFF", "#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]
 #              white     gold       coral      teal       lavender
 BIN_LABELS = ["Gigantous (25+ min)", "Epic jams", "Extended", "Standard", "Short"]
-# Side ratios: gigantous 3.5× standard, epic 2.5×, extended 2×, short 0.7×
-_BIN_SIZE_RATIOS = np.array([3.5, 2.5, 2.0, 1.0, 0.7])
-
 # Fixed threshold for the gigantous bin (absolute, not percentile-based).
 _GIGANTOUS_THRESHOLD = 25.0  # minutes
 
@@ -807,18 +804,18 @@ def plot_hilbert_duration(conn):
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # ── Duration bins → curve order + color + discrete size ──
+    # ── Duration bins → curve order + color ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
     lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
-    base_size = 2.0  # bin 4 (short) gets this
-    tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
+    base_size = 2.0
+
+    # Continuous linear size: tile side ∝ duration (same formula as strips)
+    min_size, max_size = 1.0, 7.0
+    tile_sizes = min_size + (durs / max_dur) * (max_size - min_size)
 
     # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
-    # Standard Fermat: r = c*√i gives uniform density.  We want density
-    # ∝ 1/size² so small tiles pack tight and big ones spread out.
-    # Achieve this by making area grow proportional to tile size²:
-    #   πr² ∝ Σ size²  →  r ∝ √(Σ size²)
+    # r = k * √(Σ size²)  →  density ∝ 1/size², tight center, roomy rim
     golden_angle = np.pi * (3 - np.sqrt(5))
     tile_cx = np.empty(n_tiles)
     tile_cy = np.empty(n_tiles)
@@ -931,17 +928,19 @@ def plot_gosper_duration(conn):
             centered /= extent
         gosper_norm[order] = centered
 
-    # ── Duration bins → curve order + color + discrete size ──
+    # ── Duration bins → curve order + color ──
     bins = _duration_bins(durs)
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
     lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
     # Gosper curves are sparser than Hilbert, so 1.3× base size
     base_size = 2.0 * 1.3
-    tile_sizes = base_size * _BIN_SIZE_RATIOS[bins]
+
+    # Continuous linear size: tile side ∝ duration (same formula as strips)
+    min_size, max_size = 1.0 * 1.3, 7.0 * 1.3
+    tile_sizes = min_size + (durs / max_dur) * (max_size - min_size)
 
     # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
     # r = k * √(Σ size²)  →  density ∝ 1/size², tight center, roomy rim
-    # Tighter k than Hilbert (0.7) to compensate for 1.3× larger tiles
     golden_angle = np.pi * (3 - np.sqrt(5))
     tile_cx = np.empty(n_perfs)
     tile_cy = np.empty(n_perfs)
@@ -1039,7 +1038,7 @@ def _assign_eras(rows):
     return assigned
 
 
-def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
+def _era_wedge_layout(assigned, tile_sizes, k=0.7,
                       gap_deg=1.5, era_k_scales=None):
     """Compute tile positions for era-segmented sunflower.
 
@@ -1047,14 +1046,10 @@ def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
     ----------
     assigned : list of (era_index, row)
         Pre-sorted by era, then by duration ascending within each era.
-    base_size : float
-        Tile size for bin 3 (short).
+    tile_sizes : array
+        Pre-computed tile sizes (one per element of assigned).
     era_k_scales : dict, optional
         Per-era multiplier for k (e.g. {1: 0.8} to tighten Peak Jams).
-    size_ratios : array
-        Per-bin size multiplier.
-    bins : array
-        Bin index per tile (parallel to assigned).
     k : float
         Packing factor.
     gap_deg : float
@@ -1065,7 +1060,6 @@ def _era_wedge_layout(assigned, base_size, size_ratios, bins, k=0.7,
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries
     """
     n = len(assigned)
-    tile_sizes = base_size * size_ratios[bins]
     tile_cx = np.empty(n)
     tile_cy = np.empty(n)
 
@@ -1174,15 +1168,19 @@ def plot_hilbert_duration_era(conn):
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # Duration bins → curve order + color + discrete size
+    # Duration bins → curve order + color
     bins = _duration_bins(durs)
     bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
     lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
     base_size = 2.0
 
+    # Continuous linear size: tile side ∝ duration (same formula as strips)
+    min_size, max_size = 1.0, 7.0
+    tile_sizes_pre = min_size + (durs / max_dur) * (max_size - min_size)
+
     # Era-wedge layout
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
-        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=1.2,
+        assigned, tile_sizes_pre, k=1.2,
         era_k_scales={1: 0.82, 3: 0.92})
 
     # Aligned rotation (all tiles same orientation)
@@ -1327,15 +1325,19 @@ def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
             centered /= extent
         gosper_norm[order] = centered
 
-    # Duration bins → curve order + color + discrete size
+    # Duration bins → curve order + color
     bins = _duration_bins(durs)
     bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
     lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
     base_size = 2.0 * 1.3  # Gosper density compensation
 
+    # Continuous linear size: tile side ∝ duration (same formula as strips)
+    min_size, max_size = 1.0 * 1.3, 7.0 * 1.3
+    tile_sizes_pre = min_size + (durs / max_dur) * (max_size - min_size)
+
     # Era-wedge layout (tighter k for Gosper's larger tiles)
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
-        assigned, base_size, _BIN_SIZE_RATIOS, bins, k=0.92,
+        assigned, tile_sizes_pre, k=0.92,
         era_k_scales={1: 0.82, 3: 0.92})
 
     # Tile rotations — strategy depends on mode

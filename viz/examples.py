@@ -267,14 +267,15 @@ def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1,
 
 
 
-def _strip_layout(year_data, max_strip_width=50.0,
-                  min_size=0.2, max_size=2.5, size_scale=1.0, pad=1.0):
+def _strip_layout(year_data, min_size=0.2, max_size=2.5,
+                  size_scale=1.0, pad=1.0):
     """Compute tile positions for a dense year-strip layout.
 
-    Tiles are laid out chronologically within each year.  If a year's
-    tiles don't fit in one row, the year wraps into multiple rows.
-    Each tile's slot equals its rendered size * pad, guaranteeing
-    zero overlap.
+    Tiles are laid out chronologically within each year.  Years that
+    are wider than a global target width wrap into multiple rows; the
+    target is the median year width, so most years are one row and
+    large years split to match.  Each tile's slot equals its rendered
+    size * pad, guaranteeing zero overlap.
 
     Parameters
     ----------
@@ -292,51 +293,60 @@ def _strip_layout(year_data, max_strip_width=50.0,
     tiles : list[dict]
         Per-tile dict with keys: cx, cy, size, rotation, dur_min, date, year.
     strip_bounds : dict[int, dict]
-        {year: {"y_center", "height", "x_left", "x_right"}}.
+        {year: {"y_center", "height"}}.
     fig_bounds : tuple (x_min, x_max, y_min, y_max).
     """
     all_years = sorted(year_data.keys())
     max_dur = max(p["dur_min"] for perfs in year_data.values() for p in perfs)
 
-    tiles = []
-    strip_bounds = {}
-    y_cursor = 0.0  # top of the figure
-
+    # First pass: compute tile infos and total widths per year so we can
+    # derive a global target row width (median of year widths for years
+    # with enough tiles to potentially split).
+    year_tile_infos = {}  # yr → [(perf, size), ...]
+    year_total_w = {}     # yr → total slot width
     for yr in all_years:
         perfs = year_data[yr]
         if not perfs:
             continue
-
-        # Chronological order within each year
         chrono = sorted(perfs, key=lambda p: p["date"])
-
-        # Compute rendered tile sizes (includes size_scale)
-        tile_infos = []
+        infos = []
         for p in chrono:
             size = (min_size + (p["dur_min"] / max_dur)
                     * (max_size - min_size)) * size_scale
-            tile_infos.append((p, size))
+            infos.append((p, size))
+        year_tile_infos[yr] = infos
+        year_total_w[yr] = sum(s * pad for _, s in infos)
 
-        # Balanced row splitting: determine how many rows are needed,
-        # then distribute tiles so row widths are as equal as possible.
+    # Target row width = median of year widths (years with ≥5 tiles).
+    # This makes the typical year a single row and splits large years
+    # into rows of similar width, producing a visually consistent strip.
+    qualifying = [w for yr, w in year_total_w.items()
+                  if len(year_tile_infos[yr]) >= 5]
+    target_w = float(np.median(qualifying)) if qualifying else 20.0
+
+    tiles = []
+    strip_bounds = {}
+    y_cursor = 0.0  # top of the figure
+
+    for yr in sorted(year_tile_infos.keys()):
+        tile_infos = year_tile_infos[yr]
         slot_widths = [s * pad for _, s in tile_infos]
-        total_w = sum(slot_widths)
+        total_w = year_total_w[yr]
 
-        if total_w <= max_strip_width:
+        # Split every year to approximate the global target width
+        n_rows = max(1, round(total_w / target_w))
+        if n_rows <= 1:
             rows = [list(tile_infos)]
         else:
-            n_rows = max(2, -(-int(total_w) // int(max_strip_width)))
-            target_w = total_w / n_rows
-
+            row_target = total_w / n_rows
             rows = [[]]
             row_w = 0.0
             for i, item in enumerate(tile_infos):
                 sw = slot_widths[i]
                 remaining_rows = n_rows - len(rows)
-                # Start a new row if adding this tile moves us further
-                # from the target AND there are rows left to fill
                 if (rows[-1] and remaining_rows > 0
-                        and abs(row_w + sw - target_w) > abs(row_w - target_w)):
+                        and abs(row_w + sw - row_target)
+                            > abs(row_w - row_target)):
                     rows.append([])
                     row_w = 0.0
                 rows[-1].append(item)
@@ -367,11 +377,16 @@ def _strip_layout(year_data, max_strip_width=50.0,
         yr_y_center = yr_y_top - yr_h / 2
         strip_bounds[yr] = {
             "y_center": yr_y_center, "height": yr_h,
-            "x_left": -max_strip_width / 2, "x_right": max_strip_width / 2,
         }
+        y_cursor -= 0.5  # gap between years
 
-    x_min = -max_strip_width / 2 - 2
-    x_max = max_strip_width / 2 + 2
+    # Compute x extent from actual tile positions
+    if tiles:
+        x_extent = max(abs(t["cx"]) + t["size"] / 2 for t in tiles)
+    else:
+        x_extent = 10.0
+    x_min = -x_extent - 2
+    x_max = x_extent + 2
     y_min = y_cursor - 1
     y_max = 1
 
@@ -390,7 +405,8 @@ def _draw_strip_decorations(ax, strip_bounds, fig_bounds):
                 color="#aaaacc", fontsize=14, fontweight="bold",
                 ha="right", va="center", zorder=5)
 
-    # Draw separator lines between consecutive years (at the boundary)
+    # Draw separator lines between consecutive years, spanning content width
+    x_line = fig_bounds[1] - 2  # content right edge
     for i in range(len(sorted_years) - 1):
         yr_above = sorted_years[i]
         yr_below = sorted_years[i + 1]
@@ -398,8 +414,8 @@ def _draw_strip_decorations(ax, strip_bounds, fig_bounds):
         sb_below = strip_bounds[yr_below]
         y_boundary = (sb_above["y_center"] - sb_above["height"] / 2
                       + sb_below["y_center"] + sb_below["height"] / 2) / 2
-        ax.axhline(y=y_boundary, xmin=0, xmax=1, color="#444466",
-                   linewidth=0.5, zorder=0.5)
+        ax.plot([x_label, x_line], [y_boundary, y_boundary],
+                color="#444466", linewidth=0.5, zorder=0.5)
 
 
 def _query_pitb_with_month(conn):

@@ -770,10 +770,11 @@ def plot_gosper_strip(conn):
 # 6-7. Duration Sunflower — Playing in the Band
 # ══════════════════════════════════════════════════════════════════════════
 
-def _plot_duration_sunflower(conn, curve_type="hilbert"):
+def _plot_duration_sunflower(conn, curve_type="hilbert", mobile=False):
     """Duration-sorted sunflower: shortest at center, epic jams on rim.
 
     curve_type: "hilbert" | "gosper"
+    mobile: if True, render a compact 1500×1500 version (no title, tight pad)
     """
     cfg = _CURVE_CONFIGS[curve_type]
     rows = _query_pitb_with_month(conn)
@@ -814,7 +815,8 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
 
     tile_rots = np.zeros(n_tiles)
 
-    fig, ax = _create_dark_figure((30, 30))
+    figsize = (15, 15) if mobile else (30, 30)
+    fig, ax = _create_dark_figure(figsize)
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
 
     for idx in draw_order:
@@ -837,20 +839,28 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
                 size, cx, cy, rot,
                 fill_color, line_color, lw, zorder)
 
-    pad = 3.5
+    pad = 2.0 if mobile else 3.5
     ax.set_xlim(-r_outer - pad, r_outer + pad)
     ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
-    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower\n"
-                 f"{n_tiles} performances  ·  "
-                 f"tile area proportional to performance length",
-                 fontsize=15, pad=14, color=LABEL_COLOR)
+    if not mobile:
+        curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+        ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower\n"
+                     f"{n_tiles} performances  ·  "
+                     f"tile area proportional to performance length",
+                     fontsize=15, pad=14, color=LABEL_COLOR)
 
-    _add_duration_legend(ax, durs)
-    _save_plot(fig, _CURVE_FILENAMES[("duration", curve_type)], dpi=250)
+    if mobile:
+        _add_duration_legend(ax, durs, fontsize=11, ncol=3,
+                             bbox_to_anchor=(0.5, 1.02))
+        base = _CURVE_FILENAMES[("duration", curve_type)]
+        fname = base.replace(".png", "_mobile.png")
+        _save_plot(fig, fname, dpi=100)
+    else:
+        _add_duration_legend(ax, durs)
+        _save_plot(fig, _CURVE_FILENAMES[("duration", curve_type)], dpi=250)
 
 
 def plot_hilbert_duration(conn):
@@ -859,6 +869,10 @@ def plot_hilbert_duration(conn):
 
 def plot_gosper_duration(conn):
     _plot_duration_sunflower(conn, curve_type="gosper")
+
+
+def plot_gosper_duration_mobile(conn):
+    _plot_duration_sunflower(conn, curve_type="gosper", mobile=True)
 
 
 # ── Era definitions for PITB segmented sunflowers ────────────────────────
@@ -1156,12 +1170,13 @@ def _gosper_tile_rotations(n_tiles, mode, rng):
 
 
 def _plot_duration_era(conn, curve_type="hilbert",
-                       rotation_mode="aligned", suffix=""):
+                       rotation_mode="aligned", suffix="", mobile=False):
     """Era-segmented sunflower, duration-sorted within each wedge.
 
     curve_type: "hilbert" | "gosper"
     rotation_mode: "random" | "aligned" | "hex6" | "hex3" (Gosper only)
     suffix: appended to Gosper filename, e.g. "_aligned"
+    mobile: if True, render a compact 1500×1500 version (no title, tight pad)
     """
     cfg = _CURVE_CONFIGS[curve_type]
     rows = _query_pitb_with_month(conn)
@@ -1196,7 +1211,8 @@ def _plot_duration_era(conn, curve_type="hilbert",
     else:
         tile_rots = np.zeros(n_tiles)
 
-    fig, ax = _create_dark_figure((30, 30))
+    figsize = (15, 15) if mobile else (30, 30)
+    fig, ax = _create_dark_figure(figsize)
 
     _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
                                 tile_cx, tile_cy, tile_sizes)
@@ -1223,30 +1239,39 @@ def _plot_duration_era(conn, curve_type="hilbert",
                 size, cx, cy, rot,
                 fill_color, line_color, lw, zorder)
 
-    pad = 3.5
+    pad = 2.0 if mobile else 3.5
     shift = r_outer * 0.22
     ax.set_xlim(-r_outer - pad + shift, r_outer + pad + shift)
     ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
-
-    subtitle = (f"{n_tiles} performances  ·  "
-                f"tile area proportional to performance length")
-
-    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
-                 f"{subtitle}",
-                 fontsize=15, pad=14, color=LABEL_COLOR)
+    if not mobile:
+        curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+        subtitle = (f"{n_tiles} performances  ·  "
+                    f"tile area proportional to performance length")
+        ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
+                     f"{subtitle}",
+                     fontsize=15, pad=14, color=LABEL_COLOR)
 
     # Duration legend
-    _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
+    if mobile:
+        _add_duration_legend(ax, durs, fontsize=11, ncol=3,
+                             bbox_to_anchor=(0.5, 1.02))
+    else:
+        _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 
-    if curve_type == "hilbert":
+    if mobile:
+        base = _CURVE_FILENAMES.get(("duration_era", curve_type),
+                                     f"09_gosper_duration_era{suffix}.png")
+        fname = base.replace(".png", "_mobile.png")
+        _save_plot(fig, fname, dpi=100)
+    elif curve_type == "hilbert":
         fname = _CURVE_FILENAMES[("duration_era", "hilbert")]
+        _save_plot(fig, fname, dpi=250)
     else:
         fname = f"09_gosper_duration_era{suffix}.png"
-    _save_plot(fig, fname, dpi=250)
+        _save_plot(fig, fname, dpi=250)
 
 
 def plot_hilbert_duration_era(conn):
@@ -1256,6 +1281,11 @@ def plot_hilbert_duration_era(conn):
 def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
     _plot_duration_era(conn, curve_type="gosper",
                        rotation_mode=rotation_mode, suffix=suffix)
+
+
+def plot_gosper_duration_era_mobile(conn, rotation_mode="aligned", suffix=""):
+    _plot_duration_era(conn, curve_type="gosper",
+                       rotation_mode=rotation_mode, suffix=suffix, mobile=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1275,10 +1305,12 @@ def main(tile_mode=None):
     plot_gosper_strip(conn)
     plot_hilbert_duration(conn)
     plot_gosper_duration(conn)
+    plot_gosper_duration_mobile(conn)
     plot_hilbert_duration_era(conn)
     plot_gosper_duration_era(conn)
+    plot_gosper_duration_era_mobile(conn)
     conn.close()
-    print(f"Done — 9 plots saved to {OUTPUT_DIR}/")
+    print(f"Done — 11 plots saved to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":

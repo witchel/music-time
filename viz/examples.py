@@ -15,6 +15,8 @@ from matplotlib.patches import Patch
 import numpy as np
 
 from gdtimings.db import get_connection
+import matplotlib.patches as mpatches
+
 from viz.curves import (
     smooth_hilbert as _smooth_hilbert,
     precompute_gosper as _precompute_gosper,
@@ -219,7 +221,7 @@ def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1,
 
 
 def _strip_layout(year_data, min_size=0.2, max_size=2.5,
-                  size_scale=1.0, pad=1.0):
+                  size_scale=1.0, pad=1.15):
     """Compute tile positions for a dense year-strip layout.
 
     Tiles are laid out chronologically within each year.  Years that
@@ -399,14 +401,65 @@ def _build_year_data(rows):
 # GOSPER_SCALE compensates for Gosper's sparser bounding-box fill.
 GOSPER_SCALE = 1.3
 
+# ── Tile rendering mode ──────────────────────────────────────────────────
+# "positive" = colored lines on dark background (no fill shape)
+# "negative" = light tinted fill with dark (background-matched) lines
+TILE_MODE = "negative"
+
+
+def _lighten(hex_color, amount=0.45):
+    """Blend *hex_color* toward white by *amount* (0 = unchanged, 1 = white)."""
+    r, g, b = mcolors.to_rgb(hex_color)
+    return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
+
+
+def _darken(hex_color, amount=0.45):
+    """Blend *hex_color* toward black by *amount* (0 = unchanged, 1 = black)."""
+    r, g, b = mcolors.to_rgb(hex_color)
+    return (r * (1 - amount), g * (1 - amount), b * (1 - amount))
+
+
+# ── Tile style: per-bin order and per-mode line widths ───────────────────
+# Only 2 curve orders per curve type to keep visual complexity down.
+_TILE_STYLE = {
+    0: {"h_order": 4, "g_order": 3,
+        "positive": {"lw": 0.65},
+        "negative": {"lw": 0.45}},   # Gigantous
+    1: {"h_order": 4, "g_order": 3,
+        "positive": {"lw": 0.65},
+        "negative": {"lw": 0.40}},   # Epic
+    2: {"h_order": 4, "g_order": 3,
+        "positive": {"lw": 0.65},
+        "negative": {"lw": 0.60}},   # Extended
+    3: {"h_order": 4, "g_order": 3,
+        "positive": {"lw": 0.65},
+        "negative": {"lw": 0.90}},   # Standard
+    4: {"h_order": 3, "g_order": 2,
+        "positive": {"lw": 1.10},
+        "negative": {"lw": 1.30}},   # Short
+}
+
+
+def _tile_colors(bini):
+    """Return (fill_color, line_color, base_lw) for the active TILE_MODE."""
+    style = _TILE_STYLE[bini]
+    if TILE_MODE == "positive":
+        ms = style["positive"]
+        return None, _lighten(BIN_COLORS[bini], 0.3), ms["lw"]
+    else:
+        ms = style["negative"]
+        fill = _lighten(BIN_COLORS[bini])
+        line = _darken(BIN_COLORS[bini])
+        return fill, line, ms["lw"]
+
 _CURVE_CONFIGS = {
     "hilbert": {
-        "orders": [2, 3, 4, 5, 6],
-        "bin_to_order": {0: 6, 1: 5, 2: 4, 3: 3, 4: 2},
-        "lw_map": {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15},
+        "orders": [3, 4],
+        "bin_to_order": {b: s["h_order"] for b, s in _TILE_STYLE.items()},
+        "lw_map": {3: 0.9, 4: 0.5},
         "base_size": 2.0,
         "size_scale": 1.0,
-        # Sunflower-flow specific (pair 1)
+        # Sunflower-flow specific (pair 1) — uses continuous color, no fill
         "flow_orders": [2, 3, 4, 5],
         "flow_lw_map": {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25},
         "flow_thresholds": [(5, 2), (10, 3), (18, 4)],  # (dur_break, order)
@@ -417,12 +470,12 @@ _CURVE_CONFIGS = {
         "era_k": 1.2,
     },
     "gosper": {
-        "orders": range(1, 6),
-        "bin_to_order": {0: 5, 1: 4, 2: 3, 3: 2, 4: 1},
-        "lw_map": {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15},
+        "orders": [2, 3],
+        "bin_to_order": {b: s["g_order"] for b, s in _TILE_STYLE.items()},
+        "lw_map": {2: 1.0, 3: 0.5},
         "base_size": 2.0 * GOSPER_SCALE,
         "size_scale": GOSPER_SCALE,
-        # Sunflower-flow specific (pair 1)
+        # Sunflower-flow specific (pair 1) — uses continuous color, no fill
         "flow_orders": range(1, 5),
         "flow_lw_map": {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25},
         "flow_thresholds": [(5, 1), (10, 2), (20, 3)],
@@ -459,8 +512,9 @@ def _precompute_curves(curve_type, orders):
         return _precompute_gosper(orders)
 
 
-def _draw_hilbert_tile(ax, sx, sy, size, cx, cy, rot, color, lw, zorder):
-    """Draw a single Hilbert tile at (cx, cy) with given rotation."""
+def _draw_hilbert_tile(ax, sx, sy, size, cx, cy, rot,
+                       fill_color, line_color, lw, zorder):
+    """Draw a Hilbert tile: rounded-rect fill + curve line on top."""
     margin = 0.04 * size
     span = size - 2 * margin
     local_x = -size / 2 + margin + sx * span
@@ -468,20 +522,43 @@ def _draw_hilbert_tile(ax, sx, sy, size, cx, cy, rot, color, lw, zorder):
     ca, sa = np.cos(rot), np.sin(rot)
     xs = local_x * ca - local_y * sa + cx
     ys = local_x * sa + local_y * ca + cy
-    ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
-            solid_capstyle="round", zorder=zorder)
+
+    # Rounded-rectangle fill
+    if fill_color is not None:
+        rpad = size * 0.12
+        patch = mpatches.FancyBboxPatch(
+            (cx - size / 2, cy - size / 2), size, size,
+            boxstyle=f"round,pad=0,rounding_size={rpad}",
+            facecolor=fill_color, edgecolor="none", alpha=0.9, zorder=zorder)
+        ax.add_patch(patch)
+
+    ax.plot(xs, ys, color=line_color, linewidth=lw, alpha=0.92,
+            solid_capstyle="round", zorder=zorder + 0.1)
     return xs, ys
 
 
-def _draw_gosper_tile(ax, pts, gosper_angle_val, size, cx, cy, rot, color, lw, zorder):
-    """Draw a single Gosper tile at (cx, cy) with given rotation."""
+def _draw_gosper_tile(ax, pts, gosper_angle_val, size, cx, cy, rot,
+                      fill_color, line_color, lw, zorder):
+    """Draw a Gosper tile: convex-hull fill + curve line on top."""
     rot_adj = rot - gosper_angle_val
     ca, sa = np.cos(rot_adj), np.sin(rot_adj)
     scaled = pts * size
     rx = scaled[:, 0] * ca - scaled[:, 1] * sa + cx
     ry = scaled[:, 0] * sa + scaled[:, 1] * ca + cy
-    ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
-            solid_capstyle="round", zorder=zorder)
+
+    # Convex-hull fill
+    if fill_color is not None:
+        from scipy.spatial import ConvexHull
+        hull_pts = np.column_stack([rx, ry])
+        hull = ConvexHull(hull_pts)
+        hull_verts = hull_pts[hull.vertices]
+        patch = mpatches.Polygon(hull_verts, closed=True,
+                                 facecolor=fill_color, edgecolor="none",
+                                 alpha=0.9, zorder=zorder)
+        ax.add_patch(patch)
+
+    ax.plot(rx, ry, color=line_color, linewidth=lw, alpha=0.92,
+            solid_capstyle="round", zorder=zorder + 0.1)
     return rx, ry
 
 
@@ -621,6 +698,8 @@ def _plot_strip(conn, curve_type="hilbert"):
     _draw_strip_decorations(ax, strip_bounds, fig_bounds)
 
     prev_end = None
+    prev_cx = None
+    prev_size = None
     prev_cy = None
     for idx in range(len(tiles)):
         t = tiles[idx]
@@ -630,28 +709,36 @@ def _plot_strip(conn, curve_type="hilbert"):
         rot = t["rotation"]
         bini = bins[idx]
         order = bin_to_order[bini]
-        color = BIN_COLORS[bini]
+        fill_color, line_color, base_lw = _tile_colors(bini)
         zorder = 1 + dur / max_dur
-        lw = lw_map[order] * (size / base_size)
+        lw = base_lw * (size / base_size)
 
         if curve_type == "hilbert":
             xs, ys = _draw_hilbert_tile(
-                ax, *curve_data[order], size, cx, cy, rot, color, lw, zorder)
+                ax, *curve_data[order], size, cx, cy, rot,
+                fill_color, line_color, lw, zorder)
             tile_start = (xs[0], ys[0])
             tile_end = (xs[-1], ys[-1])
         else:
             rx, ry = _draw_gosper_tile(
                 ax, curve_data[order].copy(), gosper_angles[order],
-                size, cx, cy, rot, color, lw, zorder)
+                size, cx, cy, rot,
+                fill_color, line_color, lw, zorder)
             tile_start = (rx[0], ry[0])
             tile_end = (rx[-1], ry[-1])
 
-        # Connect to previous tile in same row
+        # Connect to previous tile in same row with light gray bridge
         if prev_end is not None and cy == prev_cy:
-            ax.plot([prev_end[0], tile_start[0]], [prev_end[1], tile_start[1]],
-                    color="#666688", linewidth=0.4, alpha=0.6, zorder=0.5)
+            # Draw from right edge of previous tile to left edge of current
+            x0 = prev_cx + prev_size / 2
+            x1 = cx - size / 2
+            ax.plot([x0, x1], [cy, cy],
+                    color="#888899", linewidth=0.6, alpha=0.7,
+                    solid_capstyle="round", zorder=0.5)
 
         prev_end = tile_end
+        prev_cx = cx
+        prev_size = size
         prev_cy = cy
 
     ax.set_xlim(fig_bounds[0], fig_bounds[1])
@@ -720,6 +807,8 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
         tile_cy[i] = r * np.sin(theta)
     r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
+    _resolve_overlaps(tile_cx, tile_cy, tile_sizes)
+
     tile_rots = np.zeros(n_tiles)
 
     fig, ax = _create_dark_figure((30, 30))
@@ -730,18 +819,20 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
         cx, cy = tile_cx[idx], tile_cy[idx]
         rot = tile_rots[idx]
         bini = bins[idx]
-        color = BIN_COLORS[bini]
+        fill_color, line_color, base_lw = _tile_colors(bini)
         order = bin_to_order[bini]
         zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order] * (size / base_size)
+        lw = base_lw * (size / base_size)
 
         if curve_type == "hilbert":
             _draw_hilbert_tile(
-                ax, *curve_data[order], size, cx, cy, rot, color, lw, zorder)
+                ax, *curve_data[order], size, cx, cy, rot,
+                fill_color, line_color, lw, zorder)
         else:
             _draw_gosper_tile(
                 ax, curve_data[order].copy(), gosper_angles[order],
-                size, cx, cy, rot, color, lw, zorder)
+                size, cx, cy, rot,
+                fill_color, line_color, lw, zorder)
 
     pad = 3.5
     ax.set_xlim(-r_outer - pad, r_outer + pad)
@@ -883,14 +974,15 @@ def _era_wedge_layout(assigned, tile_sizes, k=0.7,
 
 
 def _resolve_overlaps(tile_cx, tile_cy, tile_sizes,
-                      iterations=1000, tol=0.01):
+                      gap=0.3, iterations=2000, tol=0.01):
     """Push overlapping tiles apart until no bounding boxes overlap.
 
     Uses vectorised pairwise repulsion: each overlapping pair generates
     equal-and-opposite forces proportional to the overlap depth.
+    *gap* adds breathing room (in data units) between tile edges.
     Modifies tile_cx, tile_cy in place.
     """
-    min_sep = (tile_sizes[:, None] + tile_sizes[None, :]) / 2
+    min_sep = (tile_sizes[:, None] + tile_sizes[None, :]) / 2 + gap
 
     for _ in range(iterations):
         dx = tile_cx[:, None] - tile_cx[None, :]
@@ -1059,18 +1151,20 @@ def _plot_duration_era(conn, curve_type="hilbert",
         cx, cy = tile_cx[idx], tile_cy[idx]
         rot = tile_rots[idx]
         bini = bins[idx]
-        color = BIN_COLORS[bini]
+        fill_color, line_color, base_lw = _tile_colors(bini)
         order = bin_to_order[bini]
         zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order] * (size / base_size)
+        lw = base_lw * (size / base_size)
 
         if curve_type == "hilbert":
             _draw_hilbert_tile(
-                ax, *curve_data[order], size, cx, cy, rot, color, lw, zorder)
+                ax, *curve_data[order], size, cx, cy, rot,
+                fill_color, line_color, lw, zorder)
         else:
             _draw_gosper_tile(
                 ax, curve_data[order].copy(), gosper_angles[order],
-                size, cx, cy, rot, color, lw, zorder)
+                size, cx, cy, rot,
+                fill_color, line_color, lw, zorder)
 
     pad = 3.5
     shift = r_outer * 0.22
@@ -1129,7 +1223,10 @@ def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
 # ══════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════
-def main():
+def main(tile_mode=None):
+    global TILE_MODE
+    if tile_mode is not None:
+        TILE_MODE = tile_mode
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     conn = get_conn()
     print("Generating visualizations...")

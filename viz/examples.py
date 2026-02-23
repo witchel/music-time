@@ -236,19 +236,27 @@ def _sunflower_layout(durs, min_size=0.35, max_size=2.4, spacing=1.1,
 
 # ── Strip-layout helpers ─────────────────────────────────────────────────
 
-def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=2.5,
-                  max_strip_height=5.5, year_gap=0.4,
-                  hiatus_gap=2.5, min_size=0.2, max_size=2.5, seed=42):
+
+
+def _strip_layout(year_data, max_strip_width=50.0,
+                  min_size=0.2, max_size=2.5, size_scale=1.0, pad=1.0):
     """Compute tile positions for a dense year-strip layout.
 
-    Tiles are placed center-out: longest performances at the center of
-    each strip, progressively shorter ones toward the edges.  This makes
-    the epic jams visually dominant.
+    Tiles are laid out chronologically within each year.  If a year's
+    tiles don't fit in one row, the year wraps into multiple rows.
+    Each tile's slot equals its rendered size * pad, guaranteeing
+    zero overlap.
 
     Parameters
     ----------
     year_data : dict[int, list[dict]]
         {year: [{"dur_min": float, "month": int, "date": str}, ...]}.
+    size_scale : float
+        Multiplier applied to tile sizes (e.g. 1.3 for Gosper density
+        compensation).  Baked into the stored size so drawing code can
+        use t["size"] directly.
+    pad : float
+        Slot width = size * pad.  1.05 = 5% gap between tiles.
 
     Returns
     -------
@@ -258,19 +266,7 @@ def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=2.5,
         {year: {"y_center", "height", "x_left", "x_right"}}.
     fig_bounds : tuple (x_min, x_max, y_min, y_max).
     """
-    rng = np.random.default_rng(seed)
-
     all_years = sorted(year_data.keys())
-
-    # Global stats for scaling
-    year_total_min = {}
-    year_count = {}
-    for yr, perfs in year_data.items():
-        year_total_min[yr] = sum(p["dur_min"] for p in perfs)
-        year_count[yr] = len(perfs)
-
-    max_total = max(year_total_min.values()) if year_total_min else 1
-    max_count = max(year_count.values()) if year_count else 1
     max_dur = max(p["dur_min"] for perfs in year_data.values() for p in perfs)
 
     tiles = []
@@ -282,64 +278,57 @@ def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=2.5,
         if not perfs:
             continue
 
-        # Strip dimensions
-        tot = year_total_min.get(yr, 0)
-        cnt = year_count.get(yr, 0)
-        strip_w = np.sqrt(tot / max_total) * max_strip_width
-        strip_h = min_strip_height + (max_strip_height - min_strip_height) * np.sqrt(cnt / max_count)
+        # Chronological order within each year
+        chrono = sorted(perfs, key=lambda p: p["date"])
 
-        y_center = y_cursor - strip_h / 2
+        # Compute rendered tile sizes (includes size_scale)
+        tile_infos = []
+        for p in chrono:
+            size = (min_size + (p["dur_min"] / max_dur)
+                    * (max_size - min_size)) * size_scale
+            tile_infos.append((p, size))
 
-        # Sort by duration descending → center-out placement
-        sorted_perfs = sorted(perfs, key=lambda p: p["dur_min"], reverse=True)
-        total_dur = sum(p["dur_min"] for p in sorted_perfs) or 1
+        # Greedily fill rows left-to-right; wrap when next tile exceeds width
+        rows = [[]]
+        row_widths = [0.0]
+        for item in tile_infos:
+            slot = item[1] * pad
+            if row_widths[-1] + slot > max_strip_width and rows[-1]:
+                rows.append([])
+                row_widths.append(0.0)
+            rows[-1].append(item)
+            row_widths[-1] += slot
 
-        # Build center-out ordering: longest at center, then alternate R/L
-        center_list = []
-        right_list = []
-        left_list = []
-        for i, p in enumerate(sorted_perfs):
-            if i == 0:
-                center_list.append(p)
-            elif i % 2 == 1:
-                right_list.append(p)
-            else:
-                left_list.append(p)
-        ordered = list(reversed(left_list)) + center_list + right_list
+        # Place tiles
+        yr_y_top = y_cursor
+        for row in rows:
+            row_h = max(s for _, s in row)
+            y_center = y_cursor - row_h / 2
+            row_w = sum(s * pad for _, s in row)
 
-        # Place tiles L→R within strip, each getting width ∝ duration
-        total_w = strip_w
-        x_start = -total_w / 2
-        x_pos = x_start
-        for p in ordered:
-            frac = p["dur_min"] / total_dur
-            tile_w = frac * total_w
-            cx = x_pos + tile_w / 2
-            cy = y_center + rng.uniform(-strip_h * 0.3, strip_h * 0.3)
+            x_pos = -row_w / 2
+            for p, size in row:
+                slot_w = size * pad
+                cx = x_pos + slot_w / 2
 
-            size = min_size + np.sqrt(p["dur_min"] / max_dur) * (max_size - min_size)
-            rotation = rng.uniform(0, 2 * np.pi)
+                tiles.append({
+                    "cx": cx, "cy": y_center, "size": size, "rotation": 0.0,
+                    "dur_min": p["dur_min"], "date": p["date"],
+                    "year": yr, "month": p["month"],
+                })
+                x_pos += slot_w
 
-            tiles.append({
-                "cx": cx, "cy": cy, "size": size, "rotation": rotation,
-                "dur_min": p["dur_min"], "date": p["date"],
-                "year": yr, "month": p["month"],
-            })
-            x_pos += tile_w
+            y_cursor -= row_h
 
+        yr_h = yr_y_top - y_cursor
+        yr_y_center = yr_y_top - yr_h / 2
         strip_bounds[yr] = {
-            "y_center": y_center, "height": strip_h,
-            "x_left": -total_w / 2, "x_right": total_w / 2,
+            "y_center": yr_y_center, "height": yr_h,
+            "x_left": -max_strip_width / 2, "x_right": max_strip_width / 2,
         }
 
-        y_cursor -= strip_h + year_gap
-
-        # Modest gap for 1974→1976 hiatus
-        if yr == 1974:
-            y_cursor -= hiatus_gap
-
-    x_min = min(sb["x_left"] for sb in strip_bounds.values()) - 2
-    x_max = max(sb["x_right"] for sb in strip_bounds.values()) + 2
+    x_min = -max_strip_width / 2 - 2
+    x_max = max_strip_width / 2 + 2
     y_min = y_cursor - 1
     y_max = 1
 
@@ -347,22 +336,27 @@ def _strip_layout(year_data, max_strip_width=50.0, min_strip_height=2.5,
 
 
 def _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years):
-    """Draw year labels (every 5 years) and hiatus marker."""
-    x_label = fig_bounds[0] + 1.0
+    """Draw year labels and separator lines between consecutive years."""
+    x_label = fig_bounds[0] + 0.5
 
-    for yr, sb in strip_bounds.items():
-        if yr % 5 == 0:
-            ax.text(x_label, sb["y_center"], str(yr),
-                    color="#aaaacc", fontsize=10, fontweight="bold",
-                    ha="right", va="center", zorder=5)
-
-    if 1974 in strip_bounds and 1976 in strip_bounds:
-        y_1974 = strip_bounds[1974]["y_center"] - strip_bounds[1974]["height"] / 2
-        y_1976 = strip_bounds[1976]["y_center"] + strip_bounds[1976]["height"] / 2
-        y_hiatus = (y_1974 + y_1976) / 2
-        ax.text(x_label, y_hiatus, "'75",
-                color="#555577", fontsize=8, fontstyle="italic",
+    sorted_years = sorted(strip_bounds.keys())
+    for yr in sorted_years:
+        sb = strip_bounds[yr]
+        # Year label centered vertically in the year's strip
+        ax.text(x_label, sb["y_center"], str(yr),
+                color="#aaaacc", fontsize=14, fontweight="bold",
                 ha="right", va="center", zorder=5)
+
+    # Draw separator lines between consecutive years (at the boundary)
+    for i in range(len(sorted_years) - 1):
+        yr_above = sorted_years[i]
+        yr_below = sorted_years[i + 1]
+        sb_above = strip_bounds[yr_above]
+        sb_below = strip_bounds[yr_below]
+        y_boundary = (sb_above["y_center"] - sb_above["height"] / 2
+                      + sb_below["y_center"] + sb_below["height"] / 2) / 2
+        ax.axhline(y=y_boundary, xmin=0, xmax=1, color="#444466",
+                   linewidth=0.5, zorder=0.5)
 
 
 def _query_pitb_with_month(conn):
@@ -603,15 +597,16 @@ def plot_hilbert_strip(conn):
     all_durs = np.array([t["dur_min"] for t in tiles])
     max_dur = all_durs.max()
 
-    # Pre-compute Hilbert curves
-    h_orders = [2, 3, 4, 5]
+    # Pre-compute Hilbert curves (orders 2-6 to match sunflower plots)
+    h_orders = [2, 3, 4, 5, 6]
     curves = {o: _hilbert_points(o) for o in h_orders}
     grids = {o: 2 ** o for o in h_orders}
 
-    # Color mapping
-    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
-    cmap = plt.cm.YlOrRd
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
+    # 5-bin system matching sunflower plots
+    bins = _duration_bins(all_durs)
+    bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
+    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
+    base_size = 2.0
 
     fig, ax = plt.subplots(figsize=(24, 30))
     fig.set_facecolor("#1a1a2e")
@@ -620,25 +615,18 @@ def plot_hilbert_strip(conn):
     all_years = sorted(year_data.keys())
     _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
 
-    # Draw tiles — smallest first
-    draw_order = sorted(range(len(tiles)), key=lambda i: tiles[i]["dur_min"])
-    for idx in draw_order:
+    # Draw tiles chronologically, connecting consecutive tiles in same row
+    prev_end = None
+    prev_cy = None
+    for idx in range(len(tiles)):
         t = tiles[idx]
         dur = t["dur_min"]
         size = t["size"]
         cx, cy = t["cx"], t["cy"]
         rot = t["rotation"]
 
-        # Choose Hilbert order
-        if dur < 5:
-            order = 2
-        elif dur < 10:
-            order = 3
-        elif dur < 18:
-            order = 4
-        else:
-            order = 5
-
+        bini = bins[idx]
+        order = bin_to_order[bini]
         pts = curves[order]
         grid_n = grids[order]
         margin = 0.04 * size
@@ -654,11 +642,19 @@ def plot_hilbert_strip(conn):
         xs = local_x * ca - local_y * sa + cx
         ys = local_x * sa + local_y * ca + cy
 
-        color = cmap(dur_norm(dur))
+        # Connect to previous tile in same row
+        if prev_end is not None and cy == prev_cy:
+            ax.plot([prev_end[0], xs[0]], [prev_end[1], ys[0]],
+                    color="#666688", linewidth=0.4, alpha=0.6, zorder=0.5)
+
+        color = BIN_COLORS[bini]
         zorder = 1 + dur / max_dur
-        lw = lw_map[order]
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.95,
+        lw = lw_map[order] * (size / base_size)
+        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
                 solid_capstyle="round", zorder=zorder)
+
+        prev_end = (xs[-1], ys[-1])
+        prev_cy = cy
 
     ax.set_xlim(fig_bounds[0], fig_bounds[1])
     ax.set_ylim(fig_bounds[2], fig_bounds[3])
@@ -670,14 +666,17 @@ def plot_hilbert_strip(conn):
                  "longest jams at center",
                  fontsize=15, pad=14, color="white")
 
-    cax = fig.add_axes([0.20, 0.96, 0.60, 0.008])
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
-    sm.set_array([])
-    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
-    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
-    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
-    cb.ax.xaxis.set_label_position("top")
-    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
+    # Duration legend (matching sunflower plots)
+    q75, q50, q25 = _duration_thresholds(all_durs)
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
+    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
+                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
+                    edgecolor="#444", labelcolor="white",
+                    bbox_to_anchor=(0.5, 1.0))
+    leg.get_frame().set_linewidth(0.5)
 
     fig.savefig(OUTPUT_DIR / "04_hilbert_strip_playing_in_band.png", dpi=200,
                 facecolor=fig.get_facecolor())
@@ -693,15 +692,15 @@ def plot_gosper_strip(conn):
     """Dense year-strip layout with Gosper tiles — longest jams at center."""
     rows = _query_pitb_with_month(conn)
     year_data = _build_year_data(rows)
-    tiles, strip_bounds, fig_bounds = _strip_layout(year_data)
+    tiles, strip_bounds, fig_bounds = _strip_layout(year_data, size_scale=1.3)
 
     all_durs = np.array([t["dur_min"] for t in tiles])
     max_dur = all_durs.max()
 
-    # Pre-compute normalized Gosper curves
+    # Pre-compute normalized Gosper curves (orders 1-5 to match sunflower plots)
     gosper_norm = {}
     gosper_angle = {}
-    for order in range(1, 5):
+    for order in range(1, 6):
         raw = _gosper_points(order)
         delta = raw[-1] - raw[0]
         gosper_angle[order] = np.arctan2(delta[1], delta[0])
@@ -713,10 +712,11 @@ def plot_gosper_strip(conn):
             centered /= extent
         gosper_norm[order] = centered
 
-    # Color mapping
-    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=all_durs.min(), vmax=all_durs.max())
-    cmap = plt.cm.YlOrRd
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
+    # 5-bin system matching sunflower plots
+    bins = _duration_bins(all_durs)
+    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
+    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
+    base_size = 2.0 * 1.3  # Gosper density compensation
 
     fig, ax = plt.subplots(figsize=(24, 30))
     fig.set_facecolor("#1a1a2e")
@@ -725,38 +725,39 @@ def plot_gosper_strip(conn):
     all_years = sorted(year_data.keys())
     _draw_strip_decorations(ax, strip_bounds, fig_bounds, all_years)
 
-    # Draw tiles — smallest first
-    draw_order = sorted(range(len(tiles)), key=lambda i: tiles[i]["dur_min"])
-    for idx in draw_order:
+    # Draw tiles chronologically, connecting consecutive tiles in same row
+    prev_end = None
+    prev_cy = None
+    for idx in range(len(tiles)):
         t = tiles[idx]
         dur = t["dur_min"]
-        size = t["size"] * 1.3  # Gosper density compensation
+        size = t["size"]  # size_scale=1.3 already baked in by layout
         cx, cy = t["cx"], t["cy"]
         rot = t["rotation"]
 
-        # Choose Gosper order
-        if dur < 5:
-            order = 1
-        elif dur < 10:
-            order = 2
-        elif dur < 20:
-            order = 3
-        else:
-            order = 4
-
+        bini = bins[idx]
+        order = bin_to_order[bini]
         pts = gosper_norm[order].copy()
-        # Subtract intrinsic angle so curve aligns with tile rotation
+        # Subtract intrinsic angle so curve aligns consistently
         rot_adj = rot - gosper_angle[order]
         ca, sa = np.cos(rot_adj), np.sin(rot_adj)
         scaled = pts * size
         rx = scaled[:, 0] * ca - scaled[:, 1] * sa + cx
         ry = scaled[:, 0] * sa + scaled[:, 1] * ca + cy
 
-        color = cmap(dur_norm(dur))
+        # Connect to previous tile in same row
+        if prev_end is not None and cy == prev_cy:
+            ax.plot([prev_end[0], rx[0]], [prev_end[1], ry[0]],
+                    color="#666688", linewidth=0.4, alpha=0.6, zorder=0.5)
+
+        color = BIN_COLORS[bini]
         zorder = 1 + dur / max_dur
-        lw = lw_map[order]
-        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.95,
+        lw = lw_map[order] * (size / base_size)
+        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
                 solid_capstyle="round", zorder=zorder)
+
+        prev_end = (rx[-1], ry[-1])
+        prev_cy = cy
 
     ax.set_xlim(fig_bounds[0], fig_bounds[1])
     ax.set_ylim(fig_bounds[2], fig_bounds[3])
@@ -768,14 +769,17 @@ def plot_gosper_strip(conn):
                  "longest jams at center",
                  fontsize=15, pad=14, color="white")
 
-    cax = fig.add_axes([0.20, 0.96, 0.60, 0.008])
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
-    sm.set_array([])
-    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
-    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
-    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
-    cb.ax.xaxis.set_label_position("top")
-    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
+    # Duration legend (matching sunflower plots)
+    q75, q50, q25 = _duration_thresholds(all_durs)
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
+    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
+                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
+                    edgecolor="#444", labelcolor="white",
+                    bbox_to_anchor=(0.5, 1.0))
+    leg.get_frame().set_linewidth(0.5)
 
     fig.savefig(OUTPUT_DIR / "05_gosper_strip_playing_in_band.png", dpi=200,
                 facecolor=fig.get_facecolor())
@@ -797,7 +801,6 @@ def plot_hilbert_duration(conn):
     durs = np.array([r["dur_min"] for r in rows])
     n_tiles = len(rows)
     max_dur = durs.max()
-    rng = np.random.default_rng(42)
 
     # Pre-compute Hilbert curves at multiple orders
     h_orders = [2, 3, 4, 5, 6]
@@ -829,8 +832,8 @@ def plot_hilbert_duration(conn):
         tile_cy[i] = r * np.sin(theta)
     r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
-    # Random rotation per tile
-    tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
+    # Aligned rotation (all tiles same orientation)
+    tile_rots = np.zeros(n_tiles)
 
     fig, ax = plt.subplots(figsize=(30, 30))
     fig.set_facecolor("#1a1a2e")
@@ -912,7 +915,6 @@ def plot_gosper_duration(conn):
     durs = np.array([r["dur_min"] for r in rows])
     n_perfs = len(rows)
     max_dur = durs.max()
-    rng = np.random.default_rng(42)
 
     # ── Pre-compute normalized Gosper curves at orders 1-5 ──
     gosper_norm = {}
@@ -953,8 +955,8 @@ def plot_gosper_duration(conn):
         tile_cy[i] = r * np.sin(theta)
     r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
-    # Random rotation per tile
-    tile_rots = rng.uniform(0, 2 * np.pi, n_perfs)
+    # Aligned rotation (all tiles same orientation)
+    tile_rots = np.zeros(n_perfs)
 
     fig, ax = plt.subplots(figsize=(30, 30))
     fig.set_facecolor("#1a1a2e")
@@ -1166,7 +1168,6 @@ def plot_hilbert_duration_era(conn):
     durs = np.array([r["dur_min"] for (_, r) in assigned])
     n_tiles = len(assigned)
     max_dur = durs.max()
-    rng = np.random.default_rng(42)
 
     # Pre-compute Hilbert curves at multiple orders
     h_orders = [2, 3, 4, 5, 6]
@@ -1184,8 +1185,8 @@ def plot_hilbert_duration_era(conn):
         assigned, base_size, _BIN_SIZE_RATIOS, bins, k=1.2,
         era_k_scales={1: 0.82, 3: 0.92})
 
-    # Random rotation per tile
-    tile_rots = rng.uniform(0, 2 * np.pi, n_tiles)
+    # Aligned rotation (all tiles same orientation)
+    tile_rots = np.zeros(n_tiles)
 
     fig, ax = plt.subplots(figsize=(30, 30))
     fig.set_facecolor("#1a1a2e")

@@ -155,3 +155,45 @@ the data matched real-world constraints (the Dead didn't play after 1995).
 
 Final DB after rebuild: **18,287 releases, 368,484 tracks, 996 songs,
 325 sandwiches.  Zero post-1995 data.**
+
+---
+
+## 2026-02-23 — Tile alignment + 5-bin gigantous category
+
+**Gigantous bin** added as a 5th duration category for jams ≥25 minutes.
+The original 4-bin system (quartile-based) lumped the rare, legendary
+25-40 minute PITB performances into the same "epic" bucket as 15-minute
+ones.  The new system uses a fixed 25-minute threshold for the top bin
+(white tiles, 3.5× base size, Hilbert order 6 / Gosper order 5), then
+splits the remainder into quartile-based bins as before.  Only ~11 PITB
+performances qualify — all from 1972-1974 — but they're the visual
+centerpiece of the era plots.
+
+**Tile alignment experiment** was prompted by visible overlap in the
+Gosper era plot.  Each tile is a space-filling curve (Hilbert or Gosper)
+rendered at a position on a sunflower spiral.  The original code rotated
+every tile to a random angle ∈ [0°, 360°), which gave an organic look
+but caused unpredictable collisions — a tile's protrusions might jut
+into a neighbor's space depending on how the random angles happened to
+align.
+
+Tested four rotation strategies on the Gosper era plot:
+- **Random** (baseline) — uniform random rotation per tile
+- **Aligned** (0°) — all tiles share the same orientation
+- **Hex-6** — random choice from 6 orientations at 60° intervals
+- **Hex-3** — random choice from 3 orientations at 120° intervals
+
+**Aligned won decisively.**  The Gosper curve is NOT hexagonally
+symmetric (its bounding shape has radius varying 0.18–0.77 across
+angular sectors), so the hex-quantized strategies didn't produce the
+honeycomb interlocking that hexagonal tiles would.  Aligned tiles work
+because the sunflower spiral's golden angle (~137.5°) is irrational —
+adjacent tiles are never at the same angular position, so identical
+protrusion profiles naturally avoid systematic collisions.
+
+Hilbert curves (which are square with 4-fold rotational symmetry) also
+look cleaner aligned — the grid-like texture makes size differences
+between bins more immediately legible, at the cost of a slightly more
+mechanical aesthetic.
+
+All four sunflower plots (06–09) now use aligned tiles.

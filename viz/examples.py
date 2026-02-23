@@ -62,7 +62,7 @@ def _add_duration_legend(ax, durs, **kwargs):
               f"Extended ({q50:.0f}–{q75:.0f} min)",
               f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
     patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    defaults = dict(loc="upper center", fontsize=11, ncol=5, framealpha=0.85,
+    defaults = dict(loc="upper center", fontsize=14, ncol=5, framealpha=0.85,
                     facecolor=DARK_BG, edgecolor="#444", labelcolor=LABEL_COLOR)
     defaults.update(kwargs)
     leg = ax.legend(handles=patches, **defaults)
@@ -120,7 +120,7 @@ def plot_streamgraph(conn):
     ax.set_title("Streamgraph — Share of Performance Time (top 10 songs)")
     ax.set_ylabel("% of recorded time (centered)")
     ax.set_xlabel("Year")
-    ax.legend(loc="upper left", fontsize=7, ncol=2, framealpha=0.9)
+    ax.legend(loc="upper left", fontsize=10, ncol=2, framealpha=0.9)
     fig.tight_layout()
     fig.savefig(OUTPUT_DIR / "01_streamgraph.png", dpi=150)
     plt.close(fig)
@@ -746,10 +746,12 @@ def _plot_strip(conn, curve_type="hilbert"):
     ax.set_aspect("equal")
     ax.axis("off")
 
+    n_tiles = len(tiles)
+    n_years = len(strip_bounds)
     curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
     ax.set_title(f"Playing in the Band — {curve_label} Year Strips\n"
-                 "tile area & complexity ∝ duration  ·  "
-                 "longest jams at center",
+                 f"{n_tiles} performances across {n_years} years  ·  "
+                 f"tile area proportional to performance length",
                  fontsize=15, pad=14, color=LABEL_COLOR)
 
     _add_duration_legend(ax, all_durs, bbox_to_anchor=(0.5, 1.0))
@@ -789,9 +791,10 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
     base_size = cfg["base_size"]
     scale = cfg["size_scale"]
 
-    # Continuous linear size: tile side ∝ duration
+    # Tile side ∝ duration^0.75 — compresses the extreme outlier so the
+    # largest tile doesn't dominate packing.  (Area still grows with duration.)
     min_size, max_size = 1.0 * scale, 7.0 * scale
-    tile_sizes = min_size + (durs / max_dur) * (max_size - min_size)
+    tile_sizes = min_size + (durs / max_dur) ** 0.75 * (max_size - min_size)
 
     # Adaptive sunflower layout
     golden_angle = np.pi * (3 - np.sqrt(5))
@@ -807,7 +810,7 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
         tile_cy[i] = r * np.sin(theta)
     r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
-    _resolve_overlaps(tile_cx, tile_cy, tile_sizes)
+    _resolve_overlaps(tile_cx, tile_cy, tile_sizes, gap=0.0)
 
     tile_rots = np.zeros(n_tiles)
 
@@ -842,7 +845,8 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
 
     curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
     ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower\n"
-                 "gigantous jams on the rim  ·  tile area & complexity ∝ duration",
+                 f"{n_tiles} performances  ·  "
+                 f"tile area proportional to performance length",
                  fontsize=15, pad=14, color=LABEL_COLOR)
 
     _add_duration_legend(ax, durs)
@@ -908,7 +912,7 @@ def _era_wedge_layout(assigned, tile_sizes, k=0.7,
     tile_cx = np.empty(n)
     tile_cy = np.empty(n)
 
-    # Count tiles per era
+    # Count tiles per era for wedge allocation
     era_counts = [0] * len(PITB_ERAS)
     for ei, _ in assigned:
         era_counts[ei] += 1
@@ -963,8 +967,19 @@ def _era_wedge_layout(assigned, tile_sizes, k=0.7,
 
     r_outer = k * np.sqrt(max(era_cumul)) + tile_sizes.max()
 
-    # Resolve overlaps via iterative pairwise repulsion
-    _resolve_overlaps(tile_cx, tile_cy, tile_sizes)
+    # Build per-tile angular constraints from era wedges
+    wedge_mid = np.empty(n)
+    wedge_half = np.empty(n)
+    for i, (ei, _) in enumerate(assigned):
+        es, ew = era_wedge[ei]
+        wedge_mid[i] = es + ew / 2
+        wedge_half[i] = ew / 2
+
+    # Resolve overlaps with per-iteration angular clamping so tiles
+    # can only spread radially, never across era boundaries.
+    _resolve_overlaps(tile_cx, tile_cy, tile_sizes,
+                      wedge_mid=wedge_mid, wedge_half=wedge_half,
+                      tangential_damping=0.7)
 
     # Recalculate r_outer after tiles may have shifted outward
     max_r = np.sqrt(tile_cx ** 2 + tile_cy ** 2) + tile_sizes / 2
@@ -974,15 +989,27 @@ def _era_wedge_layout(assigned, tile_sizes, k=0.7,
 
 
 def _resolve_overlaps(tile_cx, tile_cy, tile_sizes,
-                      gap=0.3, iterations=2000, tol=0.01):
+                      gap=0.3, iterations=2000, tol=0.01,
+                      wedge_mid=None, wedge_half=None,
+                      tangential_damping=1.0):
     """Push overlapping tiles apart until no bounding boxes overlap.
 
     Uses vectorised pairwise repulsion: each overlapping pair generates
     equal-and-opposite forces proportional to the overlap depth.
     *gap* adds breathing room (in data units) between tile edges.
+
+    When *wedge_mid* and *wedge_half* are provided, tiles are clamped to
+    their angular wedge after every displacement step.  Overlaps can then
+    only be resolved radially, keeping tiles within their sectors.
+
+    *tangential_damping* (0–1) scales the tangential component of repulsive
+    forces when wedge constraints are active.  Values < 1 bias overlap
+    resolution toward radial spreading, reducing boundary oscillation.
+
     Modifies tile_cx, tile_cy in place.
     """
     min_sep = (tile_sizes[:, None] + tile_sizes[None, :]) / 2 + gap
+    has_wedge = wedge_mid is not None
 
     for _ in range(iterations):
         dx = tile_cx[:, None] - tile_cx[None, :]
@@ -1004,11 +1031,41 @@ def _resolve_overlaps(tile_cx, tile_cy, tile_sizes,
         fx = np.sum(overlap * ux, axis=1)
         fy = np.sum(overlap * uy, axis=1)
 
+        # Dampen tangential forces to bias overlap resolution radially
+        if has_wedge and tangential_damping < 1.0:
+            r_safe = np.maximum(np.sqrt(tile_cx**2 + tile_cy**2), 1e-6)
+            ur_x = tile_cx / r_safe
+            ur_y = tile_cy / r_safe
+            f_radial = fx * ur_x + fy * ur_y           # radial projection
+            ft_x = fx - f_radial * ur_x                # tangential remainder
+            ft_y = fy - f_radial * ur_y
+            fx = f_radial * ur_x + tangential_damping * ft_x
+            fy = f_radial * ur_y + tangential_damping * ft_y
+
         # Adaptive step: scale so the largest displacement ≈ 40% of worst overlap
         fmax = max(np.abs(fx).max(), np.abs(fy).max(), 1e-6)
         step = 0.4 * max_ovl / fmax
         tile_cx += fx * step
         tile_cy += fy * step
+
+        # Clamp angles to wedge boundaries, accounting for tile size so
+        # the visual edge (not just center) stays inside the wedge.
+        if has_wedge:
+            theta = np.arctan2(tile_cy, tile_cx)
+            theta = np.where(theta < wedge_mid - np.pi,
+                             theta + 2 * np.pi, theta)
+            delta = theta - wedge_mid
+            r = np.sqrt(tile_cx ** 2 + tile_cy ** 2)
+            # Shrink allowed range so tile's visual edge doesn't cross boundary
+            margin = np.where(r > 1e-6, (tile_sizes / 2) / r, 0.0)
+            effective_half = np.maximum(wedge_half - margin, 0.0)
+            outside = np.abs(delta) > effective_half
+            if outside.any():
+                clamped = wedge_mid[outside] + np.clip(
+                    delta[outside],
+                    -effective_half[outside], effective_half[outside])
+                tile_cx[outside] = r[outside] * np.cos(clamped)
+                tile_cy[outside] = r[outside] * np.sin(clamped)
 
 
 def _label_radius_at_angle(angle, tile_cx, tile_cy, tile_sizes, gap=5.0):
@@ -1124,9 +1181,9 @@ def _plot_duration_era(conn, curve_type="hilbert",
     base_size = cfg["base_size"]
     scale = cfg["size_scale"]
 
-    # Continuous linear size: tile side ∝ duration
+    # Tile side ∝ duration^0.75 — matches sunflower plots
     min_size, max_size = 1.0 * scale, 7.0 * scale
-    tile_sizes_pre = min_size + (durs / max_dur) * (max_size - min_size)
+    tile_sizes_pre = min_size + (durs / max_dur) ** 0.75 * (max_size - min_size)
 
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
         assigned, tile_sizes_pre, k=cfg["era_k"],
@@ -1174,35 +1231,16 @@ def _plot_duration_era(conn, curve_type="hilbert",
     ax.axis("off")
 
     curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
-    if curve_type == "gosper":
-        mode_label = {"random": "random rotation", "aligned": "aligned (0°)",
-                      "hex6": "hex-6 (60° quantized)",
-                      "hex3": "hex-3 (120° quantized)"}
-        subtitle = (f"rotation: {mode_label.get(rotation_mode, rotation_mode)}"
-                    f"  ·  tile area & complexity ∝ duration")
-    else:
-        subtitle = ("wedges ∝ track count  ·  gigantous jams on the rim  ·  "
-                    "tile area & complexity ∝ duration")
+
+    subtitle = (f"{n_tiles} performances  ·  "
+                f"tile area proportional to performance length")
+
     ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
                  f"{subtitle}",
                  fontsize=15, pad=14, color=LABEL_COLOR)
 
-    # Duration legend (top row)
-    leg = _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
-
-    # Era legend (second row)
-    era_colors = ["#7B68EE", "#FF8C00", "#20B2AA", "#DC143C", "#32CD32", "#BA55D3"]
-    era_patches = []
-    for i, (_, _, name, _, y0, y1) in enumerate(era_boundaries):
-        yr = f"{y0}–{y1}" if y0 != y1 else str(y0)
-        era_patches.append(Patch(facecolor=era_colors[i % len(era_colors)],
-                                 alpha=0.0, label=f"{name} ({yr})"))
-    leg2 = ax.legend(handles=era_patches, loc="upper center", fontsize=13,
-                     ncol=len(era_boundaries), framealpha=0.85,
-                     facecolor=DARK_BG, edgecolor="#444", labelcolor="#aaaacc",
-                     bbox_to_anchor=(0.5, 0.97))
-    leg2.get_frame().set_linewidth(0.5)
-    ax.add_artist(leg)
+    # Duration legend
+    _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 
     if curve_type == "hilbert":
         fname = _CURVE_FILENAMES[("duration_era", "hilbert")]

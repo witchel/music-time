@@ -354,14 +354,9 @@ def _is_non_song(title):
     return False
 
 
-def clean_title(raw):
-    """Strip track numbers, segue markers, set annotations, normalize quotes.
-
-    Returns empty string for:
-    - Multi-song combo tracks (e.g. "Help > Slip > Franklin's")
-    - Non-song tracks (tuning, crowd, banter, etc.)
-    """
-    s = raw.strip()
+def _strip_metadata(s):
+    """Remove bracketed metadata, surrounding dashes/parens, reel markers,
+    encore prefix, and timestamp prefix."""
     # Take only the first line (discard venue/date info on subsequent lines)
     s = s.split("\n")[0].strip()
     # Strip trailing backslashes (archive.org escaped newlines)
@@ -400,30 +395,16 @@ def clean_title(raw):
     # "t01.Set Up", "t03.CC Rider"
     s = re.sub(r'^t\d+\.\s*', '', s, flags=re.IGNORECASE)
 
-    # ── Date-prefix tracks → drop ──
-    # "05/85 - Thursday", "11/84 Augusta Civic Center", "95-02-20 211 Crowd"
-    if re.match(r'^\d{1,2}[-/]\d{2,4}\s', s):
-        return ""
-    # "95-02-20 211 Crowd" — YYMMDD prefix
-    if re.match(r'^\d{2}-\d{2}-\d{2}\s', s):
-        return ""
-
     # ── Leading asterisks and slashes (recording notes) ──
     # "*Desolation Row", "/Saint Stephen*", "(e) Gloria*"
     s = re.sub(r'^[\s(e)]*[*/]+\s*', '', s)
 
-    # ── Multi-song combo tracks → drop entirely ──
-    # Tracks like "Help > Slip > Franklin's" or "Drums > Space" combine
-    # multiple songs into one track.  Other releases split them properly,
-    # so we drop combos rather than trying to extract a single song.
-    # Match: "Song > Song" or "Song -> Song" or "Song → Song"
-    # (with at least one letter on each side of the arrow).
-    # Exclude tape-flip annotations like "Dru..ms > (Tape Flip)"
-    # and "S..pace > (Tape Flip Near Start)" — those are single songs.
-    if re.search(r'[A-Za-z\'\"]\s*(?:->|→|>)\s*[A-Za-z(]', s) \
-       and '(Tape Flip' not in s:
-        return ""
+    return s
 
+
+def _strip_identifiers(s):
+    """Remove disc/track identifiers (Disc###-Song, t01.Song, gd-date
+    patterns, d1t01, bare D1T12, date-disc-track, etc.)."""
     # Remove leading track numbers like "1.", "01.", "1)", "12 ."
     s = re.sub(r"^\d+\s*[\.\)]\s*", "", s)
     # Strip archive.org-style prefixes:
@@ -454,19 +435,16 @@ def clean_title(raw):
     # "Disc01,Track01 Title" or "Disc02,Track03 Title" (comma-separated)
     # Also "GD-Disc02,Track11" (with GD prefix)
     s = re.sub(r'^(?:gd[\s\-]?)?Disc\d+\s*,\s*Track\d+\s*', '', s, flags=re.IGNORECASE)
-    # Bare disc/track codes with no song: "D1T12", "D2T05", "disc305"
-    if re.match(r'^D\d+T?\d*$', s, flags=re.IGNORECASE):
-        return ""
-    if re.match(r'^disc\d+$', s, flags=re.IGNORECASE):
-        return ""
-    # Date-disc-track identifiers: "4-26-69d1t03"
-    if re.match(r'^\d{1,2}-\d{1,2}-\d{2,4}[dD]\d+[tT]\d+', s):
-        return ""
     # Spelled-out disc/track: 'Disc five, track seven: "Jam into Days Between'
     s = re.sub(r'^Disc\s+\w+\s*,\s*track\s+\w+\s*:\s*', '', s, flags=re.IGNORECASE)
     # Clean tape-flip dotted names: "Dru..ms" → "Drums", "S..pace" → "Space"
     s = re.sub(r'\.\.+', '', s)
 
+    return s
+
+
+def _strip_track_numbers(s):
+    """Remove leading track numbers in various formats."""
     # ── Disc-dash-track: "2-01 Tuning" ──
     s = re.sub(r'^\d+-\d+\s+', '', s)
     # ── Underscore separator: "02_Mississippi Half-Step" ──
@@ -480,6 +458,13 @@ def clean_title(raw):
 
     # "01 - Title" or "02 – Title" (number + spaced dash, distinct from "01." above)
     s = re.sub(r'^\d+\s+[-–—]\s+', '', s)
+
+    return s
+
+
+def _normalize_text(s):
+    """Normalize fancy quotes to straight, strip footnote markers and
+    trailing symbols."""
     # Normalize quotes: convert all fancy quotes to straight
     s = s.replace("\u2018", "'").replace("\u2019", "'")
     s = s.replace("\u201c", '"').replace("\u201d", '"')
@@ -494,6 +479,13 @@ def clean_title(raw):
     # Also handle leading (e) prefix: "(e) Gloria*" → "Gloria"
     s = re.sub(r'^\(e\)\s*', '', s)
 
+    return s
+
+
+def _strip_annotations(s):
+    """Remove recording metadata (AUD/SBD), tape flip annotations,
+    duration brackets, set annotations, segue markers, writer credits,
+    and segment labels."""
     # ── Recording metadata annotations ──
     # "(2 AUD Matrix)", "(audience recording)", "(Aud patch)",
     # "(some music lost in the flip-spliced) (audience section edited)"
@@ -548,6 +540,15 @@ def clean_title(raw):
     s = re.sub(r'\s*-?[>→]+\s*$', '', s)
     # Strip any remaining trailing asterisks/symbols after all other cleanup
     s = re.sub(r'[*#~]+\s*$', '', s)
+
+    return s
+
+
+def _validate_result(s):
+    """Non-song classification, length check, letter count.
+
+    Returns the cleaned string, or empty string if invalid.
+    """
     # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
 
@@ -567,6 +568,56 @@ def clean_title(raw):
     letters = sum(1 for c in s if c.isalpha())
     if letters < 3 and len(s) > 3:
         return ""
+
+    return s
+
+
+def clean_title(raw):
+    """Strip track numbers, segue markers, set annotations, normalize quotes.
+
+    Returns empty string for:
+    - Multi-song combo tracks (e.g. "Help > Slip > Franklin's")
+    - Non-song tracks (tuning, crowd, banter, etc.)
+    """
+    s = raw.strip()
+
+    s = _strip_metadata(s)
+
+    # ── Date-prefix tracks → drop ──
+    # "05/85 - Thursday", "11/84 Augusta Civic Center", "95-02-20 211 Crowd"
+    if re.match(r'^\d{1,2}[-/]\d{2,4}\s', s):
+        return ""
+    # "95-02-20 211 Crowd" — YYMMDD prefix
+    if re.match(r'^\d{2}-\d{2}-\d{2}\s', s):
+        return ""
+
+    # ── Multi-song combo tracks → drop entirely ──
+    # Tracks like "Help > Slip > Franklin's" or "Drums > Space" combine
+    # multiple songs into one track.  Other releases split them properly,
+    # so we drop combos rather than trying to extract a single song.
+    # Match: "Song > Song" or "Song -> Song" or "Song → Song"
+    # (with at least one letter on each side of the arrow).
+    # Exclude tape-flip annotations like "Dru..ms > (Tape Flip)"
+    # and "S..pace > (Tape Flip Near Start)" — those are single songs.
+    if re.search(r'[A-Za-z\'\"]\s*(?:->|→|>)\s*[A-Za-z(]', s) \
+       and '(Tape Flip' not in s:
+        return ""
+
+    s = _strip_identifiers(s)
+
+    # Bare disc/track codes with no song: "D1T12", "D2T05", "disc305"
+    if re.match(r'^D\d+T?\d*$', s, flags=re.IGNORECASE):
+        return ""
+    if re.match(r'^disc\d+$', s, flags=re.IGNORECASE):
+        return ""
+    # Date-disc-track identifiers: "4-26-69d1t03"
+    if re.match(r'^\d{1,2}-\d{1,2}-\d{2,4}[dD]\d+[tT]\d+', s):
+        return ""
+
+    s = _strip_track_numbers(s)
+    s = _normalize_text(s)
+    s = _strip_annotations(s)
+    s = _validate_result(s)
 
     return s
 

@@ -17,8 +17,6 @@ import time
 import html as html_module
 from html.parser import HTMLParser
 
-import requests
-
 from gdtimings.config import (
     CATEGORY_COVERAGE,
     RELEASE_COVERAGE_OVERRIDES,
@@ -27,6 +25,7 @@ from gdtimings.config import (
     WIKIPEDIA_RATE_LIMIT,
     WIKIPEDIA_USER_AGENT,
 )
+from gdtimings.http_utils import api_get_with_retry, create_session, progress_line
 from gdtimings import db
 from gdtimings.location import is_us_state, normalize_state
 from gdtimings.normalize import normalize_song
@@ -59,30 +58,15 @@ def strip_tags(html_str):
 
 
 def _session():
-    s = requests.Session()
-    s.headers["User-Agent"] = WIKIPEDIA_USER_AGENT
-    return s
+    return create_session(WIKIPEDIA_USER_AGENT)
 
 
 def _api_get(session, params, max_retries=3):
     """Make a Wikipedia API request with rate limiting and retry."""
     params.setdefault("format", "json")
-    for attempt in range(max_retries):
-        resp = session.get(WIKIPEDIA_API, params=params)
-        if resp.status_code == 429 or resp.status_code >= 500:
-            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
-            print(f"    HTTP {resp.status_code}, retrying in {retry_after}s "
-                  f"(attempt {attempt + 1}/{max_retries})")
-            time.sleep(retry_after)
-            continue
-        resp.raise_for_status()
-        time.sleep(WIKIPEDIA_RATE_LIMIT)
-        return resp.json()
-    # Final attempt — let it raise
-    resp = session.get(WIKIPEDIA_API, params=params)
-    resp.raise_for_status()
-    time.sleep(WIKIPEDIA_RATE_LIMIT)
-    return resp.json()
+    return api_get_with_retry(session, WIKIPEDIA_API, params=params,
+                              rate_limit=WIKIPEDIA_RATE_LIMIT,
+                              max_retries=max_retries)
 
 
 # ── Category enumeration ──────────────────────────────────────────────
@@ -285,6 +269,103 @@ def _parse_tracklist_tables(html_text):
     return tracks
 
 
+def _parse_segment_header(segment):
+    """Extract disc number and set name from an HTML segment between <ol> blocks.
+
+    Returns (disc, set_name) where either may be None if not found.
+    """
+    disc = None
+    set_name = None
+
+    disc_m = re.search(
+        r'(?:<[^>]+>)*\s*(?:Disc|Volume|Part)\s+(\d+|[Oo]ne|[Tt]wo|[Tt]hree|[Ff]our)',
+        segment, re.IGNORECASE,
+    )
+    if disc_m:
+        disc_text = disc_m.group(1)
+        disc_map = {"one": 1, "two": 2, "three": 3, "four": 4}
+        disc = disc_map.get(disc_text.lower(), None)
+        if disc is None:
+            try:
+                disc = int(disc_text)
+            except ValueError:
+                disc = 1
+
+    set_m = re.search(
+        r'(?:<[^>]+>)*\s*(?:Set|Encore)\s*(\d*)',
+        segment, re.IGNORECASE,
+    )
+    if set_m and not re.search(r'<ol', segment):
+        name_m = re.search(r'(Set\s*\d+|Encore\s*\d*)', segment, re.IGNORECASE)
+        if name_m:
+            set_name = name_m.group(1).strip()
+
+    return disc, set_name
+
+
+def _parse_list_item(li_html):
+    """Parse a single <li> item into a track dict.
+
+    Returns a dict with title_raw, duration, writers, segue, or None if
+    the item should be skipped (footnotes, references, etc.).
+    """
+    li_text = strip_tags(li_html).strip()
+    li_text = html_module.unescape(li_text)
+
+    # Skip footnote/reference items (start with ^ or citation markers)
+    if li_text.startswith("^") or li_text.startswith(".mw-parser"):
+        return None
+    # Skip items that look like references (contain "Retrieved" or "Archived")
+    if re.search(r'\bRetrieved\b|\bArchived\b|\bAllMusic\b', li_text):
+        return None
+
+    # Detect segue marker (→ or > in text, or &gt; in raw HTML)
+    segue = 1 if ("→" in li_text or ">" in li_text.rstrip() or
+                  "&gt;" in li_html) else 0
+
+    duration = None
+
+    # Extract duration from end
+    dur_m = re.search(r'[–\-—]\s*(\d+:\d{2}(?::\d{2})?)\s*$', li_text)
+    if dur_m:
+        duration = parse_duration(dur_m.group(1))
+        li_text = li_text[:dur_m.start()].strip()
+
+    # Extract title and writers
+    title = None
+    writers = None
+
+    # Pattern 1: "Title" (writers)
+    m = re.match(r'["\u201c](.+?)["\u201d]\s*(?:[>→])?\s*\((.+?)\)\s*$', li_text)
+    if m:
+        title = m.group(1)
+        writers = m.group(2)
+    else:
+        # Pattern 2: "Title"
+        m = re.match(r'["\u201c](.+?)["\u201d]\s*(?:[>→])?\s*$', li_text)
+        if m:
+            title = m.group(1)
+        else:
+            # Pattern 3: bare title (possibly with parenthetical writers)
+            m = re.match(r'(.+?)\s*\((.+?)\)\s*$', li_text)
+            if m:
+                title = m.group(1).strip()
+                writers = m.group(2)
+            else:
+                title = li_text.strip()
+
+    if not title:
+        return None
+
+    title = title.strip().strip('"').strip()
+    return {
+        "title_raw": title,
+        "duration": duration,
+        "writers": writers,
+        "segue": segue,
+    }
+
+
 def _parse_numbered_lists(html_text):
     """Parse numbered list format track listings.
 
@@ -296,40 +377,17 @@ def _parse_numbered_lists(html_text):
     track_num = 0
     set_name = None
 
-    # Split into lines for processing
-    # First, find the track listing section
-    # Look for ordered lists (but NOT reference lists)
     li_pattern = re.compile(r'<li[^>]*>(.*?)</li>', re.DOTALL)
-
-    # Also detect disc/set headers in the surrounding HTML
-    # Process the HTML sequentially to track disc numbers
     segments = re.split(r'(<ol[^>]*>.*?</ol>)', html_text, flags=re.DOTALL)
 
     for segment in segments:
-        # Check for disc/set headers
-        disc_m = re.search(
-            r'(?:<[^>]+>)*\s*(?:Disc|Volume|Part)\s+(\d+|[Oo]ne|[Tt]wo|[Tt]hree|[Ff]our)',
-            segment, re.IGNORECASE,
-        )
-        if disc_m:
-            disc_text = disc_m.group(1)
-            disc_map = {"one": 1, "two": 2, "three": 3, "four": 4}
-            disc = disc_map.get(disc_text.lower(), None)
-            if disc is None:
-                try:
-                    disc = int(disc_text)
-                except ValueError:
-                    disc = 1
-            track_num = 0  # reset track numbering
-
-        set_m = re.search(
-            r'(?:<[^>]+>)*\s*(?:Set|Encore)\s*(\d*)',
-            segment, re.IGNORECASE,
-        )
-        if set_m and not re.search(r'<ol', segment):
-            name_m = re.search(r'(Set\s*\d+|Encore\s*\d*)', segment, re.IGNORECASE)
-            if name_m:
-                set_name = name_m.group(1).strip()
+        # Update disc/set from headers between lists
+        seg_disc, seg_set = _parse_segment_header(segment)
+        if seg_disc is not None:
+            disc = seg_disc
+            track_num = 0
+        if seg_set is not None:
+            set_name = seg_set
 
         if not re.search(r'<ol', segment):
             continue
@@ -345,67 +403,15 @@ def _parse_numbered_lists(html_text):
         ol_html = ol_match.group(1)
 
         for li_match in li_pattern.finditer(ol_html):
-            li_html = li_match.group(1)
-            li_text = strip_tags(li_html).strip()
-            li_text = html_module.unescape(li_text)
-
-            # Skip footnote/reference items (start with ^ or citation markers)
-            if li_text.startswith("^") or li_text.startswith(".mw-parser"):
-                continue
-            # Skip items that look like references (contain "Retrieved" or "Archived")
-            if re.search(r'\bRetrieved\b|\bArchived\b|\bAllMusic\b', li_text):
+            track = _parse_list_item(li_match.group(1))
+            if track is None:
                 continue
 
             track_num += 1
-
-            # Detect segue marker (→ or > in text, or &gt; in raw HTML)
-            segue = 1 if ("→" in li_text or ">" in li_text.rstrip() or
-                          "&gt;" in li_html) else 0
-
-            # Try to parse: "Title" (writers) – MM:SS
-            # or: "Title" – MM:SS
-            # or: Title (writers) – MM:SS
-            title = None
-            writers = None
-            duration = None
-
-            # Extract duration from end
-            dur_m = re.search(r'[–\-—]\s*(\d+:\d{2}(?::\d{2})?)\s*$', li_text)
-            if dur_m:
-                duration = parse_duration(dur_m.group(1))
-                li_text = li_text[:dur_m.start()].strip()
-
-            # Extract title and writers
-            # Pattern 1: "Title" (writers)
-            m = re.match(r'["\u201c](.+?)["\u201d]\s*(?:[>→])?\s*\((.+?)\)\s*$', li_text)
-            if m:
-                title = m.group(1)
-                writers = m.group(2)
-            else:
-                # Pattern 2: "Title"
-                m = re.match(r'["\u201c](.+?)["\u201d]\s*(?:[>→])?\s*$', li_text)
-                if m:
-                    title = m.group(1)
-                else:
-                    # Pattern 3: bare title (possibly with parenthetical writers)
-                    m = re.match(r'(.+?)\s*\((.+?)\)\s*$', li_text)
-                    if m:
-                        title = m.group(1).strip()
-                        writers = m.group(2)
-                    else:
-                        title = li_text.strip()
-
-            if title:
-                title = title.strip().strip('"').strip()
-                tracks.append({
-                    "title_raw": title,
-                    "disc": disc,
-                    "track": track_num,
-                    "duration": duration,
-                    "writers": writers,
-                    "segue": segue,
-                    "set_name": set_name,
-                })
+            track["disc"] = disc
+            track["track"] = track_num
+            track["set_name"] = set_name
+            tracks.append(track)
 
     return tracks
 
@@ -646,11 +652,8 @@ def scrape_all(conn, full=False, verbose=True):
     # Phase 2: scrape each page with progress reporting
     t_start = time.monotonic()
     for i, (category, page_title) in enumerate(work, 1):
-        pct = i * 100 // len(work)
         elapsed = time.monotonic() - t_start
-        rate = i / elapsed if elapsed > 0 else 0
-        eta = (len(work) - i) / rate if rate > 0 else 0
-        prefix = f"  [{i}/{len(work)} {pct:>3}% {elapsed:.0f}s eta {eta:.0f}s]"
+        prefix = f"  {progress_line(i, len(work), elapsed)}"
 
         try:
             release_id, track_count = scrape_album(conn, session, page_title,

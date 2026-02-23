@@ -18,8 +18,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import requests
-
 from gdtimings.config import (
     ARCHIVE_CACHE_DIR,
     ARCHIVE_DEFAULT_WORKERS,
@@ -29,15 +27,14 @@ from gdtimings.config import (
     ARCHIVE_USER_AGENT,
     QUALITY_RANKS,
 )
+from gdtimings.http_utils import api_get_with_retry, create_session, progress_line
 from gdtimings import db
 from gdtimings.location import parse_city_state
 from gdtimings.normalize import normalize_song
 
 
 def _session():
-    s = requests.Session()
-    s.headers["User-Agent"] = ARCHIVE_USER_AGENT
-    return s
+    return create_session(ARCHIVE_USER_AGENT)
 
 
 def _cache_path(cache_dir, identifier):
@@ -92,22 +89,9 @@ def _thread_session():
 
 def _api_get(session, url, params=None, max_retries=3):
     """Make an API request with rate limiting and retry."""
-    for attempt in range(max_retries):
-        resp = session.get(url, params=params)
-        if resp.status_code == 429 or resp.status_code >= 500:
-            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
-            print(f"    HTTP {resp.status_code}, retrying in {retry_after}s "
-                  f"(attempt {attempt + 1}/{max_retries})")
-            time.sleep(retry_after)
-            continue
-        resp.raise_for_status()
-        time.sleep(ARCHIVE_RATE_LIMIT)
-        return resp.json()
-    # Final attempt — let it raise
-    resp = session.get(url, params=params)
-    resp.raise_for_status()
-    time.sleep(ARCHIVE_RATE_LIMIT)
-    return resp.json()
+    return api_get_with_retry(session, url, params=params,
+                              rate_limit=ARCHIVE_RATE_LIMIT,
+                              max_retries=max_retries)
 
 
 # ── Collection search ────────────────────────────────────────────────
@@ -499,10 +483,8 @@ def scrape_all(conn, full=False, verbose=True, workers=None, use_cache=True,
                 done = fetched + errors
                 if verbose and done % 100 == 0:
                     elapsed = time.monotonic() - t_start
-                    rate = done / elapsed if elapsed > 0 else 0
-                    eta = (len(to_fetch) - done) / rate if rate > 0 else 0
-                    print(f"    [{done}/{len(to_fetch)} {elapsed:.0f}s "
-                          f"eta {eta:.0f}s] {fetched} fetched, {errors} errors")
+                    print(f"    {progress_line(done, len(to_fetch), elapsed)} "
+                          f"{fetched} fetched, {errors} errors")
 
         elapsed = time.monotonic() - t_start
         if verbose:
@@ -531,9 +513,8 @@ def scrape_all(conn, full=False, verbose=True, workers=None, use_cache=True,
                 total_releases += 1
                 total_tracks += track_count
                 if verbose and total_releases % 100 == 0:
-                    pct = i * 100 // len(identifiers)
                     elapsed = time.monotonic() - t_start
-                    print(f"    [{i}/{len(identifiers)} {pct}% {elapsed:.0f}s] "
+                    print(f"    {progress_line(i, len(identifiers), elapsed)} "
                           f"{total_releases} releases, {total_tracks} tracks")
             elif release_id:
                 skipped += 1
@@ -559,11 +540,8 @@ def _scrape_sequential(conn, session, identifiers, verbose):
 
     t_start = time.monotonic()
     for i, identifier in enumerate(identifiers, 1):
-        pct = i * 100 // len(identifiers)
         elapsed = time.monotonic() - t_start
-        rate = i / elapsed if elapsed > 0 else 0
-        eta = (len(identifiers) - i) / rate if rate > 0 else 0
-        prefix = f"  [{i}/{len(identifiers)} {pct:>3}% {elapsed:.0f}s eta {eta:.0f}s]"
+        prefix = f"  {progress_line(i, len(identifiers), elapsed)}"
 
         try:
             release_id, track_count = scrape_item(conn, session, identifier)

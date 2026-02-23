@@ -15,13 +15,57 @@ from matplotlib.patches import Patch
 import numpy as np
 
 from gdtimings.db import get_connection
+from viz.curves import (
+    smooth_hilbert as _smooth_hilbert,
+    precompute_gosper as _precompute_gosper,
+    BIN_COLORS,
+    BIN_LABELS,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────
 OUTPUT_DIR = Path(__file__).parent / "output"
 
+# ── Theme constants ──────────────────────────────────────────────────────
+DARK_BG = "#1a1a2e"
+LABEL_COLOR = "white"
+
 
 def get_conn():
     return get_connection()
+
+
+def _create_dark_figure(figsize):
+    """Create a figure + axes with the project dark background."""
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.set_facecolor(DARK_BG)
+    ax.set_facecolor(DARK_BG)
+    return fig, ax
+
+
+def _save_plot(fig, filename, dpi=200):
+    """Save figure to OUTPUT_DIR and close it."""
+    fig.savefig(OUTPUT_DIR / filename, dpi=dpi,
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"  {filename}")
+
+
+def _add_duration_legend(ax, durs, **kwargs):
+    """Add a 5-bin duration legend to the axes.
+
+    Returns the Legend object. Accepts extra kwargs passed to ax.legend().
+    """
+    q75, q50, q25 = _duration_thresholds(durs)
+    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
+              f"Extended ({q50:.0f}–{q75:.0f} min)",
+              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
+    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
+    defaults = dict(loc="upper center", fontsize=11, ncol=5, framealpha=0.85,
+                    facecolor=DARK_BG, edgecolor="#444", labelcolor=LABEL_COLOR)
+    defaults.update(kwargs)
+    leg = ax.legend(handles=patches, **defaults)
+    leg.get_frame().set_linewidth(0.5)
+    return leg
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -81,99 +125,6 @@ def plot_streamgraph(conn):
     print("  01_streamgraph.png")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Space-filling curve helpers (Hilbert & Gosper)
-# ══════════════════════════════════════════════════════════════════════════
-
-def _d2xy(n, d):
-    """Convert distance d along a Hilbert curve to (x, y) in an n×n grid."""
-    x = y = 0
-    s = 1
-    while s < n:
-        rx = 1 & (d // 2)
-        ry = 1 & (d ^ rx)
-        if ry == 0:
-            if rx == 1:
-                x = s - 1 - x
-                y = s - 1 - y
-            x, y = y, x
-        x += s * rx
-        y += s * ry
-        d //= 4
-        s *= 2
-    return x, y
-
-
-def _hilbert_points(order):
-    """Return list of (x, y) points for a Hilbert curve of given order."""
-    n = 2 ** order
-    return [_d2xy(n, d) for d in range(n * n)]
-
-
-def _chaikin_smooth(xs, ys, iterations=2):
-    """Round corners of a polyline using Chaikin's corner-cutting algorithm.
-
-    Each iteration replaces every segment with two points at 25 % and 75 %,
-    progressively turning sharp turns into smooth arcs.  Two iterations are
-    enough to make a Hilbert curve look organic rather than grid-like.
-    """
-    pts = np.column_stack([xs, ys])
-    for _ in range(iterations):
-        q = 0.75 * pts[:-1] + 0.25 * pts[1:]   # 25 % along each segment
-        r = 0.25 * pts[:-1] + 0.75 * pts[1:]   # 75 % along each segment
-        new_pts = np.empty((2 * len(q), 2))
-        new_pts[0::2] = q
-        new_pts[1::2] = r
-        pts = new_pts
-    return pts[:, 0], pts[:, 1]
-
-
-def _smooth_hilbert(order, iterations=2):
-    """Return a smoothed Hilbert curve normalized to [0, 1].
-
-    The raw integer-grid Hilbert points are normalized, then Chaikin-smoothed.
-    Returns (xs, ys) ready for ``local = margin + arr * span``.
-    """
-    raw = _hilbert_points(order)
-    grid_n = 2 ** order
-    denom = max(grid_n - 1, 1)
-    xs = np.array([p[0] / denom for p in raw])
-    ys = np.array([p[1] / denom for p in raw])
-    return _chaikin_smooth(xs, ys, iterations)
-
-
-def _gosper_points(order):
-    """Generate (x, y) points for a Gosper curve (flowsnake) via L-system.
-
-    Rules: A → A-B--B+A++AA+B-,  B → +A-BB--B-A++A+B
-    Turn angle: 60°.  Each order multiplies segment count by 7.
-    """
-    axiom = "A"
-    rules = {"A": "A-B--B+A++AA+B-", "B": "+A-BB--B-A++A+B"}
-    s = axiom
-    for _ in range(order):
-        s = "".join(rules.get(c, c) for c in s)
-
-    x, y = 0.0, 0.0
-    direction = 0.0
-    points = [(x, y)]
-    for c in s:
-        if c in ("A", "B"):
-            rad = np.radians(direction)
-            x += np.cos(rad)
-            y += np.sin(rad)
-            points.append((x, y))
-        elif c == "+":
-            direction += 60
-        elif c == "-":
-            direction -= 60
-    return np.array(points)
-
-
-# ── Duration-bin color palette (jewel tones on dark background) ───────
-BIN_COLORS = ["#FFFFFF", "#FFD700", "#FF6B6B", "#4ECDC4", "#A78BFA"]
-#              white     gold       coral      teal       lavender
-BIN_LABELS = ["Gigantous (25+ min)", "Epic jams", "Extended", "Standard", "Short"]
 # Fixed threshold for the gigantous bin (absolute, not percentile-based).
 _GIGANTOUS_THRESHOLD = 25.0  # minutes
 
@@ -441,178 +392,173 @@ def _build_year_data(rows):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 2. Hilbert Sunflower — Playing in the Band (chronological)
+# Curve-type configuration for unified plot functions
 # ══════════════════════════════════════════════════════════════════════════
 
-def plot_hilbert(conn):
+# Per-curve-type parameters that differ between Hilbert and Gosper variants.
+# GOSPER_SCALE compensates for Gosper's sparser bounding-box fill.
+GOSPER_SCALE = 1.3
+
+_CURVE_CONFIGS = {
+    "hilbert": {
+        "orders": [2, 3, 4, 5, 6],
+        "bin_to_order": {0: 6, 1: 5, 2: 4, 3: 3, 4: 2},
+        "lw_map": {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15},
+        "base_size": 2.0,
+        "size_scale": 1.0,
+        # Sunflower-flow specific (pair 1)
+        "flow_orders": [2, 3, 4, 5],
+        "flow_lw_map": {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25},
+        "flow_thresholds": [(5, 2), (10, 3), (18, 4)],  # (dur_break, order)
+        "flow_default_order": 5,
+        # Duration sunflower specific (pair 3)
+        "dur_k": 0.7,
+        # Era specific (pair 4)
+        "era_k": 1.2,
+    },
+    "gosper": {
+        "orders": range(1, 6),
+        "bin_to_order": {0: 5, 1: 4, 2: 3, 3: 2, 4: 1},
+        "lw_map": {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15},
+        "base_size": 2.0 * GOSPER_SCALE,
+        "size_scale": GOSPER_SCALE,
+        # Sunflower-flow specific (pair 1)
+        "flow_orders": range(1, 5),
+        "flow_lw_map": {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25},
+        "flow_thresholds": [(5, 1), (10, 2), (20, 3)],
+        "flow_default_order": 4,
+        # Duration sunflower specific (pair 3)
+        "dur_k": 0.54,
+        # Era specific (pair 4)
+        "era_k": 0.92,
+    },
+}
+
+_CURVE_FILENAMES = {
+    # (pair, curve_type) → output filename
+    ("flow", "hilbert"): "02_hilbert_playing_in_band.png",
+    ("flow", "gosper"): "03_gosper_flow_playing_in_band.png",
+    ("strip", "hilbert"): "04_hilbert_strip_playing_in_band.png",
+    ("strip", "gosper"): "05_gosper_strip_playing_in_band.png",
+    ("duration", "hilbert"): "06_hilbert_duration_sunflower.png",
+    ("duration", "gosper"): "07_gosper_duration_sunflower.png",
+    ("duration_era", "hilbert"): "08_hilbert_duration_era.png",
+}
+
+
+def _precompute_curves(curve_type, orders):
+    """Pre-compute curve data for the given type and orders.
+
+    Returns (curve_data, angle_data) where:
+    - For hilbert: curve_data is {order: (xs, ys)}, angle_data is None
+    - For gosper: curve_data is {order: points_array}, angle_data is {order: angle}
+    """
+    if curve_type == "hilbert":
+        return {o: _smooth_hilbert(o) for o in orders}, None
+    else:
+        return _precompute_gosper(orders)
+
+
+def _draw_hilbert_tile(ax, sx, sy, size, cx, cy, rot, color, lw, zorder):
+    """Draw a single Hilbert tile at (cx, cy) with given rotation."""
+    margin = 0.04 * size
+    span = size - 2 * margin
+    local_x = -size / 2 + margin + sx * span
+    local_y = -size / 2 + margin + sy * span
+    ca, sa = np.cos(rot), np.sin(rot)
+    xs = local_x * ca - local_y * sa + cx
+    ys = local_x * sa + local_y * ca + cy
+    ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
+            solid_capstyle="round", zorder=zorder)
+    return xs, ys
+
+
+def _draw_gosper_tile(ax, pts, gosper_angle_val, size, cx, cy, rot, color, lw, zorder):
+    """Draw a single Gosper tile at (cx, cy) with given rotation."""
+    rot_adj = rot - gosper_angle_val
+    ca, sa = np.cos(rot_adj), np.sin(rot_adj)
+    scaled = pts * size
+    rx = scaled[:, 0] * ca - scaled[:, 1] * sa + cx
+    ry = scaled[:, 0] * sa + scaled[:, 1] * ca + cy
+    ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
+            solid_capstyle="round", zorder=zorder)
+    return rx, ry
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2-3. Sunflower — Playing in the Band (chronological)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _plot_sunflower_flow(conn, curve_type="hilbert"):
+    """Chronological sunflower with continuous color scale.
+
+    curve_type: "hilbert" | "gosper"
+    """
+    cfg = _CURVE_CONFIGS[curve_type]
     rows = _query_pitb_with_month(conn)
 
     durs = np.array([r["dur_min"] for r in rows])
     n_tiles = len(rows)
     max_dur = durs.max()
 
-    # Pre-compute smoothed Hilbert curves at multiple orders.
-    h_orders = [2, 3, 4, 5]
-    smooth = {o: _smooth_hilbert(o) for o in h_orders}
+    curve_data, gosper_angles = _precompute_curves(curve_type, cfg["flow_orders"])
 
-    # ── Choose order per performance ──
+    # Choose order per performance based on duration thresholds
     tile_orders = np.empty(n_tiles, dtype=int)
     for i, d in enumerate(durs):
-        if d < 5:
-            tile_orders[i] = 2
-        elif d < 10:
-            tile_orders[i] = 3
-        elif d < 18:
-            tile_orders[i] = 4
-        else:
-            tile_orders[i] = 5
+        assigned = False
+        for thresh, order in cfg["flow_thresholds"]:
+            if d < thresh:
+                tile_orders[i] = order
+                assigned = True
+                break
+        if not assigned:
+            tile_orders[i] = cfg["flow_default_order"]
 
-    # ── Sunflower spiral layout ──
+    # Sunflower spiral layout
     tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
 
-    # ── Color = duration (power-law scale) ──
+    if curve_type == "gosper":
+        tile_sizes = tile_sizes * GOSPER_SCALE
+
+    # Orient Gosper tiles radially; Hilbert tiles are axis-aligned
+    orient_angles = np.arctan2(tile_cy, tile_cx) if curve_type == "gosper" else None
+
+    # Color = duration (power-law scale)
     dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
     cmap = plt.cm.YlOrRd
+    lw_map = cfg["flow_lw_map"]
 
-    fig, ax = plt.subplots(figsize=(22, 22))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
-    # Draw smallest tiles first so the epic jams render on top
+    fig, ax = _create_dark_figure((22, 22))
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25}
 
     for idx in draw_order:
         size = tile_sizes[idx]
         cx, cy = tile_cx[idx], tile_cy[idx]
-        ox = cx - size / 2
-        oy = cy - size / 2
-
-        dur = durs[idx]
-        color = cmap(dur_norm(dur))
         order = tile_orders[idx]
-        sx, sy = smooth[order]
-
-        margin = 0.04 * size
-        span = size - 2 * margin
-        xs = ox + margin + sx * span
-        ys = oy + margin + sy * span
-
-        zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order]
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.95,
-                solid_capstyle="round", zorder=zorder)
-
-    pad = 3.5
-    ax.set_xlim(-r_outer - pad, r_outer + pad)
-    ax.set_ylim(-r_outer - pad, r_outer + pad)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    ax.set_title("Playing in the Band — Hilbert Sunflower\n"
-                 "golden-angle spiral  ·  "
-                 "tile area & complexity ∝ duration  ·  color = duration",
-                 fontsize=15, pad=14, color="white")
-
-    cax = fig.add_axes([0.20, 0.94, 0.60, 0.012])
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
-    sm.set_array([])
-    cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
-    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
-    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
-    cb.ax.xaxis.set_label_position("top")
-    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
-
-    fig.savefig(OUTPUT_DIR / "02_hilbert_playing_in_band.png", dpi=200,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  02_hilbert_playing_in_band.png")
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 3. Gosper Sunflower — Playing in the Band (chronological)
-# ══════════════════════════════════════════════════════════════════════════
-def plot_gosper_flow(conn):
-    """Gosper curve tiles on sunflower spiral layout."""
-
-    rows = conn.execute("""
-        SELECT concert_date, concert_year, dur_min
-        FROM best_performances
-        WHERE song = 'Playing in the Band'
-        ORDER BY concert_date
-    """).fetchall()
-
-    durs = np.array([r["dur_min"] for r in rows])
-    n_perfs = len(rows)
-    max_dur = durs.max()
-
-    # ── Pre-compute Gosper curves at orders 1-4 ──
-    gosper_norm = {}
-    gosper_angle = {}
-    for order in range(1, 5):
-        raw = _gosper_points(order)
-        delta = raw[-1] - raw[0]
-        gosper_angle[order] = np.arctan2(delta[1], delta[0])
-        mid = (raw[0] + raw[-1]) / 2
-        centered = raw - mid
-        extent = max(centered[:, 0].max() - centered[:, 0].min(),
-                     centered[:, 1].max() - centered[:, 1].min())
-        if extent > 0:
-            centered /= extent
-        gosper_norm[order] = centered
-
-    # ── Choose order per performance ──
-    orders = np.empty(n_perfs, dtype=int)
-    for i, d in enumerate(durs):
-        if d < 5:
-            orders[i] = 1
-        elif d < 10:
-            orders[i] = 2
-        elif d < 20:
-            orders[i] = 3
-        else:
-            orders[i] = 4
-
-    # ── Sunflower spiral layout ──
-    tile_cx, tile_cy, _, tile_sizes, r_outer = _sunflower_layout(durs)
-
-    # Gosper curves don't fill their bounding box as densely as Hilbert,
-    # so scale up by ~30% for visual equivalence.
-    tile_sizes = tile_sizes * 1.3
-
-    # Orient tiles radially outward from center
-    orient_angles = np.arctan2(tile_cy, tile_cx)
-
-    # ── Draw ──
-    dur_norm = mcolors.PowerNorm(gamma=0.5, vmin=durs.min(), vmax=durs.max())
-    cmap = plt.cm.YlOrRd
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25}
-
-    fig, ax = plt.subplots(figsize=(22, 22))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
-    # Draw smallest tiles first so the epic jams render on top
-    draw_order = sorted(range(n_perfs), key=lambda i: durs[i])
-
-    for idx in draw_order:
-        order = orders[idx]
-        pts = gosper_norm[order].copy()
-        size = tile_sizes[idx]
-        tang = orient_angles[idx]
-
-        rot = tang - gosper_angle[order]
-        ca, sa = np.cos(rot), np.sin(rot)
-        scaled = pts * size
-        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
-        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
-
         color = cmap(dur_norm(durs[idx]))
         zorder = 1 + durs[idx] / max_dur
         lw = lw_map[order]
 
-        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.95,
-                solid_capstyle="round", zorder=zorder)
+        if curve_type == "hilbert":
+            sx, sy = curve_data[order]
+            ox, oy = cx - size / 2, cy - size / 2
+            margin = 0.04 * size
+            span = size - 2 * margin
+            xs = ox + margin + sx * span
+            ys = oy + margin + sy * span
+            ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.95,
+                    solid_capstyle="round", zorder=zorder)
+        else:
+            pts = curve_data[order].copy()
+            tang = orient_angles[idx]
+            rot = tang - gosper_angles[order]
+            ca, sa = np.cos(rot), np.sin(rot)
+            scaled = pts * size
+            rx = scaled[:, 0] * ca - scaled[:, 1] * sa + cx
+            ry = scaled[:, 0] * sa + scaled[:, 1] * ca + cy
+            ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.95,
+                    solid_capstyle="round", zorder=zorder)
 
     pad = 3.5
     ax.set_xlim(-r_outer - pad, r_outer + pad)
@@ -620,56 +566,60 @@ def plot_gosper_flow(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    ax.set_title("Playing in the Band — Gosper Sunflower\n"
+    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+    ax.set_title(f"Playing in the Band — {curve_label} Sunflower\n"
                  "golden-angle spiral  ·  "
                  "tile area & complexity ∝ duration  ·  color = duration",
-                 fontsize=15, pad=14, color="white")
+                 fontsize=15, pad=14, color=LABEL_COLOR)
 
     cax = fig.add_axes([0.20, 0.94, 0.60, 0.012])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=dur_norm)
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
-    cb.set_label("Duration (minutes)", color="white", fontsize=12, labelpad=6)
-    cb.ax.xaxis.set_tick_params(color="white", labelsize=11)
+    cb.set_label("Duration (minutes)", color=LABEL_COLOR, fontsize=12, labelpad=6)
+    cb.ax.xaxis.set_tick_params(color=LABEL_COLOR, labelsize=11)
     cb.ax.xaxis.set_label_position("top")
-    plt.setp(cb.ax.xaxis.get_ticklabels(), color="white")
+    plt.setp(cb.ax.xaxis.get_ticklabels(), color=LABEL_COLOR)
 
-    fig.savefig(OUTPUT_DIR / "03_gosper_flow_playing_in_band.png", dpi=200,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  03_gosper_flow_playing_in_band.png")
+    _save_plot(fig, _CURVE_FILENAMES[("flow", curve_type)])
+
+
+def plot_hilbert(conn):
+    _plot_sunflower_flow(conn, curve_type="hilbert")
+
+
+def plot_gosper_flow(conn):
+    _plot_sunflower_flow(conn, curve_type="gosper")
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 4. Hilbert Strip — year-strips of PITB Hilbert tiles
+# 4-5. Year Strips — Playing in the Band
 # ══════════════════════════════════════════════════════════════════════════
 
-def plot_hilbert_strip(conn):
-    """Dense year-strip layout with Hilbert tiles — longest jams at center."""
+def _plot_strip(conn, curve_type="hilbert"):
+    """Dense year-strip layout — longest jams at center.
+
+    curve_type: "hilbert" | "gosper"
+    """
+    cfg = _CURVE_CONFIGS[curve_type]
     rows = _query_pitb_with_month(conn)
     year_data = _build_year_data(rows)
-    tiles, strip_bounds, fig_bounds = _strip_layout(year_data)
+    tiles, strip_bounds, fig_bounds = _strip_layout(
+        year_data, size_scale=cfg["size_scale"])
 
     all_durs = np.array([t["dur_min"] for t in tiles])
     max_dur = all_durs.max()
 
-    # Pre-compute smoothed Hilbert curves (orders 2-6)
-    h_orders = [2, 3, 4, 5, 6]
-    smooth = {o: _smooth_hilbert(o) for o in h_orders}
+    curve_data, gosper_angles = _precompute_curves(curve_type, cfg["orders"])
 
-    # 5-bin system matching sunflower plots
     bins = _duration_bins(all_durs)
-    bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
-    base_size = 2.0
+    bin_to_order = cfg["bin_to_order"]
+    lw_map = cfg["lw_map"]
+    base_size = cfg["base_size"]
 
-    fig, ax = plt.subplots(figsize=(24, 30))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
+    fig, ax = _create_dark_figure((24, 30))
     _draw_strip_decorations(ax, strip_bounds, fig_bounds)
 
-    # Draw tiles chronologically, connecting consecutive tiles in same row
     prev_end = None
     prev_cy = None
     for idx in range(len(tiles)):
@@ -678,34 +628,30 @@ def plot_hilbert_strip(conn):
         size = t["size"]
         cx, cy = t["cx"], t["cy"]
         rot = t["rotation"]
-
         bini = bins[idx]
         order = bin_to_order[bini]
-        sx, sy = smooth[order]
-        margin = 0.04 * size
-        span = size - 2 * margin
-
-        # Build local coordinates centered on origin
-        local_x = -size / 2 + margin + sx * span
-        local_y = -size / 2 + margin + sy * span
-
-        # Rotate and translate
-        ca, sa = np.cos(rot), np.sin(rot)
-        xs = local_x * ca - local_y * sa + cx
-        ys = local_x * sa + local_y * ca + cy
-
-        # Connect to previous tile in same row
-        if prev_end is not None and cy == prev_cy:
-            ax.plot([prev_end[0], xs[0]], [prev_end[1], ys[0]],
-                    color="#666688", linewidth=0.4, alpha=0.6, zorder=0.5)
-
         color = BIN_COLORS[bini]
         zorder = 1 + dur / max_dur
         lw = lw_map[order] * (size / base_size)
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
-                solid_capstyle="round", zorder=zorder)
 
-        prev_end = (xs[-1], ys[-1])
+        if curve_type == "hilbert":
+            xs, ys = _draw_hilbert_tile(
+                ax, *curve_data[order], size, cx, cy, rot, color, lw, zorder)
+            tile_start = (xs[0], ys[0])
+            tile_end = (xs[-1], ys[-1])
+        else:
+            rx, ry = _draw_gosper_tile(
+                ax, curve_data[order].copy(), gosper_angles[order],
+                size, cx, cy, rot, color, lw, zorder)
+            tile_start = (rx[0], ry[0])
+            tile_end = (rx[-1], ry[-1])
+
+        # Connect to previous tile in same row
+        if prev_end is not None and cy == prev_cy:
+            ax.plot([prev_end[0], tile_start[0]], [prev_end[1], tile_start[1]],
+                    color="#666688", linewidth=0.4, alpha=0.6, zorder=0.5)
+
+        prev_end = tile_end
         prev_cy = cy
 
     ax.set_xlim(fig_bounds[0], fig_bounds[1])
@@ -713,167 +659,59 @@ def plot_hilbert_strip(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    ax.set_title("Playing in the Band — Hilbert Year Strips\n"
+    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+    ax.set_title(f"Playing in the Band — {curve_label} Year Strips\n"
                  "tile area & complexity ∝ duration  ·  "
                  "longest jams at center",
-                 fontsize=15, pad=14, color="white")
+                 fontsize=15, pad=14, color=LABEL_COLOR)
 
-    # Duration legend (matching sunflower plots)
-    q75, q50, q25 = _duration_thresholds(all_durs)
-    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
-              f"Extended ({q50:.0f}–{q75:.0f} min)",
-              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white",
-                    bbox_to_anchor=(0.5, 1.0))
-    leg.get_frame().set_linewidth(0.5)
-
-    fig.savefig(OUTPUT_DIR / "04_hilbert_strip_playing_in_band.png", dpi=200,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  04_hilbert_strip_playing_in_band.png")
+    _add_duration_legend(ax, all_durs, bbox_to_anchor=(0.5, 1.0))
+    _save_plot(fig, _CURVE_FILENAMES[("strip", curve_type)])
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# 5. Gosper Strip — year-strips of PITB Gosper tiles
-# ══════════════════════════════════════════════════════════════════════════
+def plot_hilbert_strip(conn):
+    _plot_strip(conn, curve_type="hilbert")
+
 
 def plot_gosper_strip(conn):
-    """Dense year-strip layout with Gosper tiles — longest jams at center."""
-    rows = _query_pitb_with_month(conn)
-    year_data = _build_year_data(rows)
-    tiles, strip_bounds, fig_bounds = _strip_layout(year_data, size_scale=1.3)
-
-    all_durs = np.array([t["dur_min"] for t in tiles])
-    max_dur = all_durs.max()
-
-    # Pre-compute normalized Gosper curves (orders 1-5 to match sunflower plots)
-    gosper_norm = {}
-    gosper_angle = {}
-    for order in range(1, 6):
-        raw = _gosper_points(order)
-        delta = raw[-1] - raw[0]
-        gosper_angle[order] = np.arctan2(delta[1], delta[0])
-        mid = (raw[0] + raw[-1]) / 2
-        centered = raw - mid
-        extent = max(centered[:, 0].max() - centered[:, 0].min(),
-                     centered[:, 1].max() - centered[:, 1].min())
-        if extent > 0:
-            centered /= extent
-        gosper_norm[order] = centered
-
-    # 5-bin system matching sunflower plots
-    bins = _duration_bins(all_durs)
-    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
-    base_size = 2.0 * 1.3  # Gosper density compensation
-
-    fig, ax = plt.subplots(figsize=(24, 30))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
-    _draw_strip_decorations(ax, strip_bounds, fig_bounds)
-
-    # Draw tiles chronologically, connecting consecutive tiles in same row
-    prev_end = None
-    prev_cy = None
-    for idx in range(len(tiles)):
-        t = tiles[idx]
-        dur = t["dur_min"]
-        size = t["size"]  # size_scale=1.3 already baked in by layout
-        cx, cy = t["cx"], t["cy"]
-        rot = t["rotation"]
-
-        bini = bins[idx]
-        order = bin_to_order[bini]
-        pts = gosper_norm[order].copy()
-        # Subtract intrinsic angle so curve aligns consistently
-        rot_adj = rot - gosper_angle[order]
-        ca, sa = np.cos(rot_adj), np.sin(rot_adj)
-        scaled = pts * size
-        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + cx
-        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + cy
-
-        # Connect to previous tile in same row
-        if prev_end is not None and cy == prev_cy:
-            ax.plot([prev_end[0], rx[0]], [prev_end[1], ry[0]],
-                    color="#666688", linewidth=0.4, alpha=0.6, zorder=0.5)
-
-        color = BIN_COLORS[bini]
-        zorder = 1 + dur / max_dur
-        lw = lw_map[order] * (size / base_size)
-        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
-                solid_capstyle="round", zorder=zorder)
-
-        prev_end = (rx[-1], ry[-1])
-        prev_cy = cy
-
-    ax.set_xlim(fig_bounds[0], fig_bounds[1])
-    ax.set_ylim(fig_bounds[2], fig_bounds[3])
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    ax.set_title("Playing in the Band — Gosper Year Strips\n"
-                 "tile area & complexity ∝ duration  ·  "
-                 "longest jams at center",
-                 fontsize=15, pad=14, color="white")
-
-    # Duration legend (matching sunflower plots)
-    q75, q50, q25 = _duration_thresholds(all_durs)
-    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
-              f"Extended ({q50:.0f}–{q75:.0f} min)",
-              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white",
-                    bbox_to_anchor=(0.5, 1.0))
-    leg.get_frame().set_linewidth(0.5)
-
-    fig.savefig(OUTPUT_DIR / "05_gosper_strip_playing_in_band.png", dpi=200,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  05_gosper_strip_playing_in_band.png")
+    _plot_strip(conn, curve_type="gosper")
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 6. Hilbert Duration Sunflower — Playing in the Band
+# 6-7. Duration Sunflower — Playing in the Band
 # ══════════════════════════════════════════════════════════════════════════
 
-def plot_hilbert_duration(conn):
-    """Hilbert sunflower sorted by duration: shortest at center, epic jams on rim."""
+def _plot_duration_sunflower(conn, curve_type="hilbert"):
+    """Duration-sorted sunflower: shortest at center, epic jams on rim.
+
+    curve_type: "hilbert" | "gosper"
+    """
+    cfg = _CURVE_CONFIGS[curve_type]
     rows = _query_pitb_with_month(conn)
 
-    # Sort by duration ascending — small tiles pack tightly at center,
-    # big tiles get the room they need at the outer edge.
     rows = sorted(rows, key=lambda r: r["dur_min"])
     durs = np.array([r["dur_min"] for r in rows])
     n_tiles = len(rows)
     max_dur = durs.max()
 
-    # Pre-compute smoothed Hilbert curves at multiple orders
-    h_orders = [2, 3, 4, 5, 6]
-    smooth = {o: _smooth_hilbert(o) for o in h_orders}
+    curve_data, gosper_angles = _precompute_curves(curve_type, cfg["orders"])
 
-    # ── Duration bins → curve order + color ──
     bins = _duration_bins(durs)
-    bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
-    base_size = 2.0
+    bin_to_order = cfg["bin_to_order"]
+    lw_map = cfg["lw_map"]
+    base_size = cfg["base_size"]
+    scale = cfg["size_scale"]
 
-    # Continuous linear size: tile side ∝ duration (same formula as strips)
-    min_size, max_size = 1.0, 7.0
+    # Continuous linear size: tile side ∝ duration
+    min_size, max_size = 1.0 * scale, 7.0 * scale
     tile_sizes = min_size + (durs / max_dur) * (max_size - min_size)
 
-    # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
-    # r = k * √(Σ size²)  →  density ∝ 1/size², tight center, roomy rim
+    # Adaptive sunflower layout
     golden_angle = np.pi * (3 - np.sqrt(5))
     tile_cx = np.empty(n_tiles)
     tile_cy = np.empty(n_tiles)
     cumul_area = 0.0
-    k = 0.7  # packing factor (<1 = tighter)
+    k = cfg["dur_k"]
     for i in range(n_tiles):
         cumul_area += tile_sizes[i] ** 2
         r = k * np.sqrt(cumul_area)
@@ -882,40 +720,28 @@ def plot_hilbert_duration(conn):
         tile_cy[i] = r * np.sin(theta)
     r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
 
-    # Aligned rotation (all tiles same orientation)
     tile_rots = np.zeros(n_tiles)
 
-    fig, ax = plt.subplots(figsize=(30, 30))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
-    # Draw smallest tiles first so the epic jams render on top
+    fig, ax = _create_dark_figure((30, 30))
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
 
     for idx in draw_order:
         size = tile_sizes[idx]
         cx, cy = tile_cx[idx], tile_cy[idx]
         rot = tile_rots[idx]
-
         bini = bins[idx]
         color = BIN_COLORS[bini]
         order = bin_to_order[bini]
-        sx, sy = smooth[order]
-
-        margin = 0.04 * size
-        span = size - 2 * margin
-
-        # Build local coordinates centered on origin, then rotate
-        local_x = -size / 2 + margin + sx * span
-        local_y = -size / 2 + margin + sy * span
-        ca, sa = np.cos(rot), np.sin(rot)
-        xs = local_x * ca - local_y * sa + cx
-        ys = local_x * sa + local_y * ca + cy
-
         zorder = 1 + durs[idx] / max_dur
         lw = lw_map[order] * (size / base_size)
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
-                solid_capstyle="round", zorder=zorder)
+
+        if curve_type == "hilbert":
+            _draw_hilbert_tile(
+                ax, *curve_data[order], size, cx, cy, rot, color, lw, zorder)
+        else:
+            _draw_gosper_tile(
+                ax, curve_data[order].copy(), gosper_angles[order],
+                size, cx, cy, rot, color, lw, zorder)
 
     pad = 3.5
     ax.set_xlim(-r_outer - pad, r_outer + pad)
@@ -923,144 +749,21 @@ def plot_hilbert_duration(conn):
     ax.set_aspect("equal")
     ax.axis("off")
 
-    ax.set_title("Playing in the Band — Hilbert Duration Sunflower\n"
+    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower\n"
                  "gigantous jams on the rim  ·  tile area & complexity ∝ duration",
-                 fontsize=15, pad=14, color="white")
+                 fontsize=15, pad=14, color=LABEL_COLOR)
 
-    # Legend
-    q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
-              f"Extended ({q50:.0f}–{q75:.0f} min)",
-              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white")
-    leg.get_frame().set_linewidth(0.5)
-
-    fig.savefig(OUTPUT_DIR / "06_hilbert_duration_sunflower.png", dpi=250,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  06_hilbert_duration_sunflower.png")
+    _add_duration_legend(ax, durs)
+    _save_plot(fig, _CURVE_FILENAMES[("duration", curve_type)], dpi=250)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# 7. Gosper Duration Sunflower — Playing in the Band
-# ══════════════════════════════════════════════════════════════════════════
+def plot_hilbert_duration(conn):
+    _plot_duration_sunflower(conn, curve_type="hilbert")
+
 
 def plot_gosper_duration(conn):
-    """Gosper sunflower sorted by duration: shortest at center, epic jams on rim."""
-    rows = conn.execute("""
-        SELECT concert_date, concert_year, dur_min
-        FROM best_performances
-        WHERE song = 'Playing in the Band'
-        ORDER BY concert_date
-    """).fetchall()
-
-    # Sort by duration ascending — small tiles pack tightly at center,
-    # big tiles get the room they need at the outer edge.
-    rows = sorted(rows, key=lambda r: r["dur_min"])
-    durs = np.array([r["dur_min"] for r in rows])
-    n_perfs = len(rows)
-    max_dur = durs.max()
-
-    # ── Pre-compute normalized Gosper curves at orders 1-5 ──
-    gosper_norm = {}
-    gosper_angle = {}
-    for order in range(1, 6):
-        raw = _gosper_points(order)
-        delta = raw[-1] - raw[0]
-        gosper_angle[order] = np.arctan2(delta[1], delta[0])
-        mid = (raw[0] + raw[-1]) / 2
-        centered = raw - mid
-        extent = max(centered[:, 0].max() - centered[:, 0].min(),
-                     centered[:, 1].max() - centered[:, 1].min())
-        if extent > 0:
-            centered /= extent
-        gosper_norm[order] = centered
-
-    # ── Duration bins → curve order + color ──
-    bins = _duration_bins(durs)
-    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
-    # Gosper curves are sparser than Hilbert, so 1.3× base size
-    base_size = 2.0 * 1.3
-
-    # Continuous linear size: tile side ∝ duration (same formula as strips)
-    min_size, max_size = 1.0 * 1.3, 7.0 * 1.3
-    tile_sizes = min_size + (durs / max_dur) * (max_size - min_size)
-
-    # ── Adaptive sunflower: each ring's spacing ∝ its tile sizes ──
-    # r = k * √(Σ size²)  →  density ∝ 1/size², tight center, roomy rim
-    golden_angle = np.pi * (3 - np.sqrt(5))
-    tile_cx = np.empty(n_perfs)
-    tile_cy = np.empty(n_perfs)
-    cumul_area = 0.0
-    k = 0.54
-    for i in range(n_perfs):
-        cumul_area += tile_sizes[i] ** 2
-        r = k * np.sqrt(cumul_area)
-        theta = i * golden_angle
-        tile_cx[i] = r * np.cos(theta)
-        tile_cy[i] = r * np.sin(theta)
-    r_outer = k * np.sqrt(cumul_area) + tile_sizes[-1]
-
-    # Aligned rotation (all tiles same orientation)
-    tile_rots = np.zeros(n_perfs)
-
-    fig, ax = plt.subplots(figsize=(30, 30))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
-    # Draw smallest tiles first so the epic jams render on top
-    draw_order = sorted(range(n_perfs), key=lambda i: durs[i])
-
-    for idx in draw_order:
-        bini = bins[idx]
-        order = bin_to_order[bini]
-        pts = gosper_norm[order].copy()
-        size = tile_sizes[idx]
-        rot = tile_rots[idx]
-
-        # Subtract intrinsic angle so curve aligns with random rotation
-        rot_adj = rot - gosper_angle[order]
-        ca, sa = np.cos(rot_adj), np.sin(rot_adj)
-        scaled = pts * size
-        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
-        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
-
-        color = BIN_COLORS[bini]
-        zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order] * (size / base_size)
-
-        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
-                solid_capstyle="round", zorder=zorder)
-
-    pad = 3.5
-    ax.set_xlim(-r_outer - pad, r_outer + pad)
-    ax.set_ylim(-r_outer - pad, r_outer + pad)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    ax.set_title("Playing in the Band — Gosper Duration Sunflower\n"
-                 "gigantous jams on the rim  ·  tile area & complexity ∝ duration",
-                 fontsize=15, pad=14, color="white")
-
-    # Legend
-    q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
-              f"Extended ({q50:.0f}–{q75:.0f} min)",
-              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white")
-    leg.get_frame().set_linewidth(0.5)
-
-    fig.savefig(OUTPUT_DIR / "07_gosper_duration_sunflower.png", dpi=250,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  07_gosper_duration_sunflower.png")
+    _plot_duration_sunflower(conn, curve_type="gosper")
 
 
 # ── Era definitions for PITB segmented sunflowers ────────────────────────
@@ -1270,134 +973,16 @@ def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
 
         year_str = f"{y0}–{y1}" if y0 != y1 else str(y0)
         label = f"{name}\n{year_str}"
-        ax.text(lx, ly, label, color="white", fontsize=14, fontweight="bold",
+        ax.text(lx, ly, label, color=LABEL_COLOR, fontsize=14, fontweight="bold",
                 ha="center", va="center", rotation=0,
                 alpha=0.85, zorder=10,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="#1a1a2e",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=DARK_BG,
                           edgecolor="none", alpha=0.7))
 
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 8. Hilbert Duration Era Sunflower — Playing in the Band
-# ══════════════════════════════════════════════════════════════════════════
-
-def plot_hilbert_duration_era(conn):
-    """Hilbert sunflower segmented by era wedges, duration-sorted within each."""
-    rows = _query_pitb_with_month(conn)
-
-    # Assign eras and sort: by era, then by duration ascending within each
-    assigned = _assign_eras(rows)
-    assigned.sort(key=lambda x: (x[0], x[1]["dur_min"]))
-
-    durs = np.array([r["dur_min"] for (_, r) in assigned])
-    n_tiles = len(assigned)
-    max_dur = durs.max()
-
-    # Pre-compute smoothed Hilbert curves at multiple orders
-    h_orders = [2, 3, 4, 5, 6]
-    smooth = {o: _smooth_hilbert(o) for o in h_orders}
-
-    # Duration bins → curve order + color
-    bins = _duration_bins(durs)
-    bin_to_order = {0: 6, 1: 5, 2: 4, 3: 3, 4: 2}
-    lw_map = {2: 0.9, 3: 0.8, 4: 0.5, 5: 0.25, 6: 0.15}
-    base_size = 2.0
-
-    # Continuous linear size: tile side ∝ duration (same formula as strips)
-    min_size, max_size = 1.0, 7.0
-    tile_sizes_pre = min_size + (durs / max_dur) * (max_size - min_size)
-
-    # Era-wedge layout
-    tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
-        assigned, tile_sizes_pre, k=1.2,
-        era_k_scales={1: 0.82, 3: 0.92})
-
-    # Aligned rotation (all tiles same orientation)
-    tile_rots = np.zeros(n_tiles)
-
-    fig, ax = plt.subplots(figsize=(30, 30))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
-
-    # Draw era spokes and labels
-    _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
-                                tile_cx, tile_cy, tile_sizes)
-
-    # Draw smallest tiles first so the epic jams render on top
-    draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
-
-    for idx in draw_order:
-        size = tile_sizes[idx]
-        cx, cy = tile_cx[idx], tile_cy[idx]
-        rot = tile_rots[idx]
-
-        bini = bins[idx]
-        color = BIN_COLORS[bini]
-        order = bin_to_order[bini]
-        sx, sy = smooth[order]
-
-        margin = 0.04 * size
-        span = size - 2 * margin
-
-        # Build local coordinates centered on origin, then rotate
-        local_x = -size / 2 + margin + sx * span
-        local_y = -size / 2 + margin + sy * span
-        ca, sa = np.cos(rot), np.sin(rot)
-        xs = local_x * ca - local_y * sa + cx
-        ys = local_x * sa + local_y * ca + cy
-
-        zorder = 1 + durs[idx] / max_dur
-        lw = lw_map[order] * (size / base_size)
-        ax.plot(xs, ys, color=color, linewidth=lw, alpha=0.92,
-                solid_capstyle="round", zorder=zorder)
-
-    pad = 3.5
-    shift = r_outer * 0.22  # shift view left so Peak Jams wedge has more room
-    ax.set_xlim(-r_outer - pad + shift, r_outer + pad + shift)
-    ax.set_ylim(-r_outer - pad, r_outer + pad)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    ax.set_title("Playing in the Band — Hilbert Duration Sunflower by Era\n"
-                 "wedges ∝ track count  ·  gigantous jams on the rim  ·  "
-                 "tile area & complexity ∝ duration",
-                 fontsize=15, pad=14, color="white")
-
-    # Duration legend (top row)
-    q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
-              f"Extended ({q50:.0f}–{q75:.0f} min)",
-              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white",
-                    bbox_to_anchor=(0.5, 1.0))
-    leg.get_frame().set_linewidth(0.5)
-
-    # Era legend (second row, below duration legend)
-    era_colors = ["#7B68EE", "#FF8C00", "#20B2AA", "#DC143C", "#32CD32", "#BA55D3"]
-    era_patches = []
-    for i, (_, _, name, _, y0, y1) in enumerate(era_boundaries):
-        yr = f"{y0}–{y1}" if y0 != y1 else str(y0)
-        era_patches.append(Patch(facecolor=era_colors[i % len(era_colors)],
-                                 alpha=0.0, label=f"{name} ({yr})"))
-    leg2 = ax.legend(handles=era_patches, loc="upper center", fontsize=13,
-                     ncol=len(era_boundaries), framealpha=0.85,
-                     facecolor="#1a1a2e", edgecolor="#444", labelcolor="#aaaacc",
-                     bbox_to_anchor=(0.5, 0.97))
-    leg2.get_frame().set_linewidth(0.5)
-    ax.add_artist(leg)  # re-add first legend so both display
-
-    fig.savefig(OUTPUT_DIR / "08_hilbert_duration_era.png", dpi=250,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print("  08_hilbert_duration_era.png")
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 9. Gosper Duration Era Sunflower — Playing in the Band
+# 8-9. Duration Era Sunflower — Playing in the Band
 # ══════════════════════════════════════════════════════════════════════════
 
 def _gosper_tile_rotations(n_tiles, mode, rng):
@@ -1412,7 +997,6 @@ def _gosper_tile_rotations(n_tiles, mode, rng):
     if mode == "aligned":
         return np.zeros(n_tiles)
     elif mode == "hex6":
-        # 6 orientations at 0°, 60°, 120°, 180°, 240°, 300°
         choices = np.arange(6) * (np.pi / 3)
         return rng.choice(choices, n_tiles)
     elif mode == "hex3":
@@ -1422,115 +1006,97 @@ def _gosper_tile_rotations(n_tiles, mode, rng):
         return rng.uniform(0, 2 * np.pi, n_tiles)
 
 
-def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
-    """Gosper sunflower segmented by era wedges, duration-sorted within each.
+def _plot_duration_era(conn, curve_type="hilbert",
+                       rotation_mode="aligned", suffix=""):
+    """Era-segmented sunflower, duration-sorted within each wedge.
 
-    rotation_mode: "random" | "aligned" | "hex6" | "hex3"
-    suffix: appended to filename, e.g. "_aligned"
+    curve_type: "hilbert" | "gosper"
+    rotation_mode: "random" | "aligned" | "hex6" | "hex3" (Gosper only)
+    suffix: appended to Gosper filename, e.g. "_aligned"
     """
+    cfg = _CURVE_CONFIGS[curve_type]
     rows = _query_pitb_with_month(conn)
 
-    # Assign eras and sort: by era, then by duration ascending within each
     assigned = _assign_eras(rows)
     assigned.sort(key=lambda x: (x[0], x[1]["dur_min"]))
 
     durs = np.array([r["dur_min"] for (_, r) in assigned])
     n_tiles = len(assigned)
     max_dur = durs.max()
-    rng = np.random.default_rng(42)
 
-    # Pre-compute normalized Gosper curves at orders 1-5
-    gosper_norm = {}
-    gosper_angle = {}
-    for order in range(1, 6):
-        raw = _gosper_points(order)
-        delta = raw[-1] - raw[0]
-        gosper_angle[order] = np.arctan2(delta[1], delta[0])
-        mid = (raw[0] + raw[-1]) / 2
-        centered = raw - mid
-        extent = max(centered[:, 0].max() - centered[:, 0].min(),
-                     centered[:, 1].max() - centered[:, 1].min())
-        if extent > 0:
-            centered /= extent
-        gosper_norm[order] = centered
+    curve_data, gosper_angles = _precompute_curves(curve_type, cfg["orders"])
 
-    # Duration bins → curve order + color
     bins = _duration_bins(durs)
-    bin_to_order = {0: 5, 1: 4, 2: 3, 3: 2, 4: 1}
-    lw_map = {1: 1.0, 2: 1.0, 3: 0.5, 4: 0.25, 5: 0.15}
-    base_size = 2.0 * 1.3  # Gosper density compensation
+    bin_to_order = cfg["bin_to_order"]
+    lw_map = cfg["lw_map"]
+    base_size = cfg["base_size"]
+    scale = cfg["size_scale"]
 
-    # Continuous linear size: tile side ∝ duration (same formula as strips)
-    min_size, max_size = 1.0 * 1.3, 7.0 * 1.3
+    # Continuous linear size: tile side ∝ duration
+    min_size, max_size = 1.0 * scale, 7.0 * scale
     tile_sizes_pre = min_size + (durs / max_dur) * (max_size - min_size)
 
-    # Era-wedge layout (tighter k for Gosper's larger tiles)
     tile_cx, tile_cy, tile_sizes, r_outer, era_boundaries = _era_wedge_layout(
-        assigned, tile_sizes_pre, k=0.92,
+        assigned, tile_sizes_pre, k=cfg["era_k"],
         era_k_scales={1: 0.82, 3: 0.92})
 
-    # Tile rotations — strategy depends on mode
-    tile_rots = _gosper_tile_rotations(n_tiles, rotation_mode, rng)
+    # Tile rotations
+    if curve_type == "gosper":
+        rng = np.random.default_rng(42)
+        tile_rots = _gosper_tile_rotations(n_tiles, rotation_mode, rng)
+    else:
+        tile_rots = np.zeros(n_tiles)
 
-    fig, ax = plt.subplots(figsize=(30, 30))
-    fig.set_facecolor("#1a1a2e")
-    ax.set_facecolor("#1a1a2e")
+    fig, ax = _create_dark_figure((30, 30))
 
-    # Draw era spokes and labels
     _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
                                 tile_cx, tile_cy, tile_sizes)
 
-    # Draw smallest tiles first so the epic jams render on top
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
 
     for idx in draw_order:
-        bini = bins[idx]
-        order = bin_to_order[bini]
-        pts = gosper_norm[order].copy()
         size = tile_sizes[idx]
+        cx, cy = tile_cx[idx], tile_cy[idx]
         rot = tile_rots[idx]
-
-        # Subtract intrinsic angle so curve aligns with chosen rotation
-        rot_adj = rot - gosper_angle[order]
-        ca, sa = np.cos(rot_adj), np.sin(rot_adj)
-        scaled = pts * size
-        rx = scaled[:, 0] * ca - scaled[:, 1] * sa + tile_cx[idx]
-        ry = scaled[:, 0] * sa + scaled[:, 1] * ca + tile_cy[idx]
-
+        bini = bins[idx]
         color = BIN_COLORS[bini]
+        order = bin_to_order[bini]
         zorder = 1 + durs[idx] / max_dur
         lw = lw_map[order] * (size / base_size)
 
-        ax.plot(rx, ry, color=color, linewidth=lw, alpha=0.92,
-                solid_capstyle="round", zorder=zorder)
+        if curve_type == "hilbert":
+            _draw_hilbert_tile(
+                ax, *curve_data[order], size, cx, cy, rot, color, lw, zorder)
+        else:
+            _draw_gosper_tile(
+                ax, curve_data[order].copy(), gosper_angles[order],
+                size, cx, cy, rot, color, lw, zorder)
 
     pad = 3.5
-    shift = r_outer * 0.22  # shift view left so Peak Jams wedge has more room
+    shift = r_outer * 0.22
     ax.set_xlim(-r_outer - pad + shift, r_outer + pad + shift)
     ax.set_ylim(-r_outer - pad, r_outer + pad)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    mode_label = {"random": "random rotation", "aligned": "aligned (0°)",
-                  "hex6": "hex-6 (60° quantized)", "hex3": "hex-3 (120° quantized)"}
-    ax.set_title(f"Playing in the Band — Gosper Duration Sunflower by Era\n"
-                 f"rotation: {mode_label.get(rotation_mode, rotation_mode)}  ·  "
-                 f"tile area & complexity ∝ duration",
-                 fontsize=15, pad=14, color="white")
+    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+    if curve_type == "gosper":
+        mode_label = {"random": "random rotation", "aligned": "aligned (0°)",
+                      "hex6": "hex-6 (60° quantized)",
+                      "hex3": "hex-3 (120° quantized)"}
+        subtitle = (f"rotation: {mode_label.get(rotation_mode, rotation_mode)}"
+                    f"  ·  tile area & complexity ∝ duration")
+    else:
+        subtitle = ("wedges ∝ track count  ·  gigantous jams on the rim  ·  "
+                    "tile area & complexity ∝ duration")
+    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
+                 f"{subtitle}",
+                 fontsize=15, pad=14, color=LABEL_COLOR)
 
     # Duration legend (top row)
-    q75, q50, q25 = _duration_thresholds(durs)
-    labels = [f"Gigantous (≥25 min)", f"Epic jams (≥{q75:.0f} min)",
-              f"Extended ({q50:.0f}–{q75:.0f} min)",
-              f"Standard ({q25:.0f}–{q50:.0f} min)", f"Short (<{q25:.0f} min)"]
-    patches = [Patch(facecolor=BIN_COLORS[i], label=labels[i]) for i in range(5)]
-    leg = ax.legend(handles=patches, loc="upper center", fontsize=11,
-                    ncol=5, framealpha=0.85, facecolor="#1a1a2e",
-                    edgecolor="#444", labelcolor="white",
-                    bbox_to_anchor=(0.5, 1.0))
-    leg.get_frame().set_linewidth(0.5)
+    leg = _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 
-    # Era legend (second row, below duration legend)
+    # Era legend (second row)
     era_colors = ["#7B68EE", "#FF8C00", "#20B2AA", "#DC143C", "#32CD32", "#BA55D3"]
     era_patches = []
     for i, (_, _, name, _, y0, y1) in enumerate(era_boundaries):
@@ -1539,16 +1105,25 @@ def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
                                  alpha=0.0, label=f"{name} ({yr})"))
     leg2 = ax.legend(handles=era_patches, loc="upper center", fontsize=13,
                      ncol=len(era_boundaries), framealpha=0.85,
-                     facecolor="#1a1a2e", edgecolor="#444", labelcolor="#aaaacc",
+                     facecolor=DARK_BG, edgecolor="#444", labelcolor="#aaaacc",
                      bbox_to_anchor=(0.5, 0.97))
     leg2.get_frame().set_linewidth(0.5)
-    ax.add_artist(leg)  # re-add first legend so both display
+    ax.add_artist(leg)
 
-    fname = f"09_gosper_duration_era{suffix}.png"
-    fig.savefig(OUTPUT_DIR / fname, dpi=250,
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    print(f"  {fname}")
+    if curve_type == "hilbert":
+        fname = _CURVE_FILENAMES[("duration_era", "hilbert")]
+    else:
+        fname = f"09_gosper_duration_era{suffix}.png"
+    _save_plot(fig, fname, dpi=250)
+
+
+def plot_hilbert_duration_era(conn):
+    _plot_duration_era(conn, curve_type="hilbert")
+
+
+def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
+    _plot_duration_era(conn, curve_type="gosper",
+                       rotation_mode=rotation_mode, suffix=suffix)
 
 
 # ══════════════════════════════════════════════════════════════════════════

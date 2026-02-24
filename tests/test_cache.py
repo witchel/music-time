@@ -6,12 +6,11 @@ import time
 
 import pytest
 
-from gdtimings.archive_org import (
-    _cache_path,
-    _extract_tracks,
-    _process_from_cache,
-    _read_cache,
-    _write_cache,
+from gdtimings.archive_org import _extract_tracks, _process_from_cache
+from gdtimings.cache import (
+    cache_path as _cache_path,
+    read_cache as _read_cache,
+    write_cache as _write_cache,
 )
 
 

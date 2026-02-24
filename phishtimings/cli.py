@@ -9,16 +9,27 @@ from phishtimings.analyze import compute_song_stats, print_song_summary
 
 
 def cmd_scrape(args):
-    """Scrape release track listings from MusicBrainz."""
+    """Scrape release track listings from configured sources."""
     conn = db.get_connection()
+    source = args.source
 
-    from phishtimings.musicbrainz import scrape_all as scrape_mb
-    print("Scraping MusicBrainz Phish releases...")
-    releases, tracks = scrape_mb(
-        conn, full=args.full, max_age_days=args.max_age
-    )
-    if releases == 0 and tracks == 0:
-        print("  No new data (all MusicBrainz releases already scraped).")
+    if source in ("musicbrainz", "all"):
+        from phishtimings.musicbrainz import scrape_all as scrape_mb
+        print("Scraping MusicBrainz Phish releases...")
+        releases, tracks = scrape_mb(
+            conn, full=args.full, max_age_days=args.max_age
+        )
+        if releases == 0 and tracks == 0:
+            print("  No new data (all MusicBrainz releases already scraped).")
+
+    if source in ("livephish", "all"):
+        from phishtimings.livephish import scrape_all as scrape_lp
+        print("Scraping LivePhish catalog...")
+        releases, tracks = scrape_lp(
+            conn, full=args.full, max_age_days=args.max_age
+        )
+        if releases == 0 and tracks == 0:
+            print("  No new data (all LivePhish shows already scraped).")
 
     conn.close()
 
@@ -99,6 +110,8 @@ def main():
 
     # scrape
     p_scrape = subparsers.add_parser("scrape", help="Scrape release track listings")
+    p_scrape.add_argument("--source", choices=["musicbrainz", "livephish", "all"],
+                          default="all", help="Data source (default: all)")
     p_scrape.add_argument("--full", action="store_true",
                           help="Re-scrape everything (ignore cache)")
     p_scrape.add_argument("--max-age", type=int, default=0,

@@ -7,6 +7,12 @@ DB_DIR = os.path.expanduser("~/.phishtimings")
 DB_PATH = os.path.join(DB_DIR, "phishtimings.db")
 MB_CACHE_DIR = os.path.join(DB_DIR, "cache")
 
+# ── LivePhish (official streaming catalog) ────────────────────────────
+LP_CACHE_DIR = os.path.join(DB_DIR, "cache_livephish")
+LP_API_BASE = "https://streamapi.livephish.com/api.aspx"
+LP_RATE_LIMIT = 0.5
+LP_USER_AGENT = "PhishTimingsBot/1.0 (https://github.com/phishtimings)"
+
 # ── MusicBrainz (authoritative timing source) ─────────────────────────
 MUSICBRAINZ_ARTIST_ID = "e01646f2-2a04-450d-8bf2-0d993082e058"  # Phish
 MUSICBRAINZ_RATE_LIMIT = 1.0  # seconds between requests (MB policy)

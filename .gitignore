@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 viz/output/
 .DS_Store
+phish_net_api_key.txt

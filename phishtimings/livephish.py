@@ -7,8 +7,8 @@ Two-phase pipeline (mirrors musicbrainz.py):
   Phase 1 — Fetch: catalog search → per-show detail JSON to local cache
   Phase 2 — Process: parse cached JSON into SQLite (no network required)
 
-Duplicate handling: shows whose concert_date already has a MusicBrainz
-release are skipped.  MB has ms precision and runs first → timing authority.
+Duplicate handling: shows whose concert_date already has a release from
+any source are skipped.  MB and phish.in run first → timing authorities.
 """
 
 import os
@@ -130,12 +130,12 @@ def _fetch_container_to_cache(session, container_id, cache_dir,
 
 # ── Phase 2: Process cache → DB ─────────────────────────────────────
 
-def _process_container_from_cache(conn, cached_data, verbose=True):
+def _process_container_from_cache(conn, cached_data, existing_dates, verbose=True):
     """Parse one cached LivePhish show into the DB.
 
     Skips if:
       - source_id already in DB (re-run safe)
-      - A MusicBrainz release already exists for this concert_date
+      - Any source already has a release for this concert_date
 
     Returns (releases_added, tracks_added).
     """
@@ -155,12 +155,8 @@ def _process_container_from_cache(conn, cached_data, verbose=True):
     if db.release_exists(conn, source_id):
         return 0, 0
 
-    # Skip if MusicBrainz already has this date (MB is timing authority)
-    mb_exists = conn.execute(
-        "SELECT 1 FROM releases WHERE source_type = 'musicbrainz' AND concert_date = ?",
-        (concert_date,),
-    ).fetchone()
-    if mb_exists:
+    # Skip if any source already has this date (MB/phish.in are timing authorities)
+    if concert_date in existing_dates:
         return 0, 0
 
     venue = response.get("venueName") or None
@@ -214,6 +210,7 @@ def _process_container_from_cache(conn, cached_data, verbose=True):
         tracks_added += 1
 
     conn.commit()
+    existing_dates.add(concert_date)
 
     if verbose:
         print(f"    {title} [{concert_date}]: {tracks_added} tracks")
@@ -253,30 +250,37 @@ def scrape_all(conn, full=False, max_age_days=0, verbose=True):
         print("  Fetching show details to cache...")
 
     api_fetches = 0
+    errors = 0
     for i, item in enumerate(catalog):
         cid = item.get("containerID")
         if not cid:
             continue
-        fetched = _fetch_container_to_cache(
-            session, cid, cache_dir,
-            max_age_seconds=max_age_seconds,
-            force=full,
-        )
-        if fetched:
-            api_fetches += 1
+        try:
+            fetched = _fetch_container_to_cache(
+                session, cid, cache_dir,
+                max_age_seconds=max_age_seconds,
+                force=full,
+            )
+            if fetched:
+                api_fetches += 1
+        except (requests.RequestException, ValueError, KeyError) as e:
+            errors += 1
+            if verbose:
+                print(f"    Error fetching container {cid}: {e}")
 
         if verbose and (i + 1) % 100 == 0:
             print(f"    Phase 1 progress: {i + 1}/{len(catalog)} "
-                  f"({api_fetches} fetched from API)")
+                  f"({api_fetches} fetched from API, {errors} errors)")
 
     if verbose:
         print(f"  Phase 1 complete: {api_fetches} fetched from API, "
-              f"{len(catalog) - api_fetches} from cache")
+              f"{len(catalog) - api_fetches - errors} from cache, {errors} errors")
 
     # ── Phase 2: Process cache → DB ──────────────────────────────────
     if verbose:
         print("  Phase 2: Processing cached shows into DB...")
 
+    existing_dates = db.dates_already_in_db(conn)
     total_releases = 0
     total_tracks = 0
 
@@ -289,7 +293,7 @@ def scrape_all(conn, full=False, max_age_days=0, verbose=True):
         if not cached_data:
             continue
 
-        r, t = _process_container_from_cache(conn, cached_data, verbose=verbose)
+        r, t = _process_container_from_cache(conn, cached_data, existing_dates, verbose=verbose)
         total_releases += r
         total_tracks += t
 

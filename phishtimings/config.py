@@ -39,6 +39,11 @@ FUZZY_FLAG_THRESHOLD = 0.65
 OUTLIER_STD_MULTIPLIER = 3.0
 MIN_SAMPLES_FOR_STATS = 3
 
+# ── phish.in (fan recordings) ─────────────────────────────────────────
+PI_CACHE_DIR = os.path.join(DB_DIR, "cache_phishin")
+PI_API_BASE = "https://phish.in/api/v2"
+PI_RATE_LIMIT = 0.25
+
 # ── Quality ranking ──────────────────────────────────────────────────
 QUALITY_RANKS = {
     "official": 500,

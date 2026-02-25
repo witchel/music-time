@@ -84,11 +84,14 @@ class TestCleanTitle:
 
     # Combined patterns
     def test_segue_and_part(self):
-        """Segue arrow is stripped but segment label remains (regex order)."""
-        # clean_title strips segment labels first (anchored to $), then segue
-        # markers. When both are present, the segment regex doesn't match
-        # because the arrow follows it; only the arrow gets stripped.
-        assert clean_title("  Tweezer part 1 ->  ") == "Tweezer part 1"
+        """Both segue arrow and segment label are stripped."""
+        # Segue markers are stripped first, then segment labels become
+        # end-anchored and match correctly.
+        assert clean_title("  Tweezer part 1 ->  ") == "Tweezer"
+
+    def test_segue_then_continued(self):
+        """Segue arrow + continued both stripped."""
+        assert clean_title("Tweezer continued ->") == "Tweezer"
 
 
 class TestNormalizeSong:
@@ -123,6 +126,26 @@ class TestNormalizeSong:
     def test_empty_title_returns_none(self, conn):
         """Empty string returns None tuple."""
         assert normalize_song(conn, "") == (None, None, None)
+
+    def test_canonical_alias_numeric(self, conn):
+        """Numeric title '2001' maps to 'Also Sprach Zarathustra'."""
+        sid, name, match = normalize_song(conn, "2001")
+        assert sid is not None
+        assert name == "Also Sprach Zarathustra"
+        assert match == "alias"
+
+    def test_canonical_alias_abbreviation(self, conn):
+        """'YEM' maps to 'You Enjoy Myself'."""
+        sid, name, match = normalize_song(conn, "YEM")
+        assert sid is not None
+        assert name == "You Enjoy Myself"
+        assert match == "alias"
+
+    def test_canonical_alias_555(self, conn):
+        """Numeric title '555' is a valid song."""
+        sid, name, match = normalize_song(conn, "555")
+        assert sid is not None
+        assert name == "555"
 
     def test_fuzzy_match(self, conn):
         """Fuzzy match works when song has >= 10 tracks."""

@@ -9,7 +9,11 @@ builds the alias table over time.
 import re
 import difflib
 
-from phishtimings.config import FUZZY_AUTO_THRESHOLD, FUZZY_FLAG_THRESHOLD
+from phishtimings.config import (
+    FUZZY_AUTO_THRESHOLD,
+    FUZZY_FLAG_THRESHOLD,
+    CANONICAL_ALIASES,
+)
 from phishtimings import db
 
 
@@ -45,12 +49,12 @@ def clean_title(raw):
     if not s:
         return ""
 
+    # Strip segue markers FIRST (so segment labels become end-anchored)
+    s = re.sub(r'\s*-?[>→]+\s*$', '', s)
+
     # Strip segment labels like "(Part 1)", "V1", "continued"
     s = re.sub(r'\s*\(?(V\d+|verse\s+\d+|part\s+\d+|continued)\)?\s*$', '', s,
                flags=re.IGNORECASE)
-
-    # Strip segue markers
-    s = re.sub(r'\s*-?[>→]+\s*$', '', s)
 
     # Normalize whitespace
     s = re.sub(r"\s+", " ", s).strip()
@@ -58,9 +62,10 @@ def clean_title(raw):
     if _is_non_song(s):
         return ""
 
-    # Reject very short non-letter titles
+    # Reject very short non-letter titles (but allow known numeric songs)
     if len(s) < 2 or not re.search(r'[a-zA-Z]', s):
-        return ""
+        if s.lower() not in CANONICAL_ALIASES:
+            return ""
 
     return s
 
@@ -90,6 +95,13 @@ def normalize_song(conn, raw_title):
     if row:
         db.add_alias(conn, lower, row["id"], "variant")
         return row["id"], row["canonical_name"], "exact"
+
+    # 2b. Check pre-seeded canonical aliases (abbreviations, numeric titles)
+    if lower in CANONICAL_ALIASES:
+        canonical = CANONICAL_ALIASES[lower]
+        song_id = db.get_or_create_song(conn, canonical)
+        db.add_alias(conn, lower, song_id, "canonical_alias")
+        return song_id, canonical, "alias"
 
     # 3. Fuzzy match against established DB songs (>=10 tracks)
     db_songs = conn.execute(

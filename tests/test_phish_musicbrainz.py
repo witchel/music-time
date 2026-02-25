@@ -1,6 +1,10 @@
 """Tests for phishtimings.musicbrainz date and location parsing."""
 
-from phishtimings.musicbrainz import parse_date_from_title, _parse_location_from_title
+from phishtimings.musicbrainz import (
+    parse_date_from_title,
+    _parse_location_from_title,
+    _process_release_from_cache,
+)
 
 
 class TestParseDateFromTitle:
@@ -95,3 +99,96 @@ class TestParseLocationFromTitle:
 
     def test_none(self):
         assert _parse_location_from_title(None) == (None, None, None)
+
+
+class TestProcessReleaseFromCacheDateDedup:
+    """Test date-dedup in _process_release_from_cache."""
+
+    def _make_cached_release(self, rg_id="rg-1", release_mbid="rel-1",
+                              title="2003-07-25: MSG, New York, NY, USA",
+                              disc_date="2003-07-25"):
+        """Build minimal cached MB release data."""
+        return {
+            "rg_id": rg_id,
+            "rg_title": title,
+            "release": {
+                "id": release_mbid,
+                "title": title,
+                "medium-list": [{
+                    "position": "1",
+                    "title": disc_date,
+                    "track-list": [{
+                        "position": "1",
+                        "recording": {
+                            "title": "Tweezer",
+                            "length": "420000",
+                        },
+                    }],
+                }],
+            },
+        }
+
+    def test_skips_existing_date(self, conn):
+        """Release whose concert_date is already in DB is skipped."""
+        cached = self._make_cached_release()
+        existing_dates = {"2003-07-25"}
+        r, t = _process_release_from_cache(
+            conn, cached, coverage="complete",
+            existing_dates=existing_dates, verbose=False,
+        )
+        assert (r, t) == (0, 0)
+
+    def test_inserts_new_date(self, conn):
+        """Release with fresh date is inserted."""
+        cached = self._make_cached_release()
+        existing_dates = set()
+        r, t = _process_release_from_cache(
+            conn, cached, coverage="complete",
+            existing_dates=existing_dates, verbose=False,
+        )
+        assert r == 1
+        assert t == 1
+
+    def test_adds_date_to_set(self, conn):
+        """After insert, date is added to existing_dates."""
+        cached = self._make_cached_release()
+        existing_dates = set()
+        _process_release_from_cache(
+            conn, cached, coverage="complete",
+            existing_dates=existing_dates, verbose=False,
+        )
+        assert "2003-07-25" in existing_dates
+
+    def test_multi_date_release_partial_dedup(self, conn):
+        """Multi-date release: only non-duplicate dates are inserted."""
+        cached = {
+            "rg_id": "rg-multi",
+            "rg_title": "Box Set",
+            "release": {
+                "id": "rel-multi",
+                "title": "Box Set",
+                "medium-list": [
+                    {
+                        "position": "1",
+                        "title": "2003-07-25",
+                        "track-list": [{"position": "1", "recording": {
+                            "title": "Tweezer", "length": "300000"}}],
+                    },
+                    {
+                        "position": "2",
+                        "title": "2003-07-26",
+                        "track-list": [{"position": "1", "recording": {
+                            "title": "Stash", "length": "400000"}}],
+                    },
+                ],
+            },
+        }
+        # 07-25 already exists, 07-26 is new
+        existing_dates = {"2003-07-25"}
+        r, t = _process_release_from_cache(
+            conn, cached, coverage="complete",
+            existing_dates=existing_dates, verbose=False,
+        )
+        assert r == 1  # only 07-26 inserted
+        assert t == 1
+        assert "2003-07-26" in existing_dates

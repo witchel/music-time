@@ -2,10 +2,12 @@
 
 import argparse
 import csv
+import os
 import sys
 
 from phishtimings import db
-from phishtimings.analyze import compute_song_stats, print_song_summary
+from phishtimings.analyze import compute_song_stats, print_song_summary, backfill_set_names
+from phishtimings.config import PI_CACHE_DIR
 
 
 def cmd_scrape(args):
@@ -44,8 +46,10 @@ def cmd_scrape(args):
 
 
 def cmd_analyze(args):
-    """Compute song statistics and flag outliers."""
+    """Compute song statistics, backfill set_name, and flag outliers."""
     conn = db.get_connection()
+    print("Backfilling set_name from phish.in cache...")
+    backfill_set_names(conn)
     print("Computing song statistics...")
     compute_song_stats(conn)
     print_song_summary(conn)
@@ -81,7 +85,41 @@ def cmd_status(args):
         for row in coverages:
             print(f"    {row['coverage'] or 'NULL':15s} {row['n']}")
 
+    # phish.in coverage report (from cache)
+    _print_coverage_report(conn)
+
     conn.close()
+
+
+def _print_coverage_report(conn):
+    """Print phish.in coverage: how many cached shows are in the DB."""
+    if not os.path.isdir(PI_CACHE_DIR):
+        return
+
+    # Count cached show dates (files named YYYY-MM-DD.json in subdirs)
+    import re
+    date_pat = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+    cached_dates = set()
+    for dirpath, _, filenames in os.walk(PI_CACHE_DIR):
+        for fname in filenames:
+            stem = fname.rsplit('.', 1)[0] if '.' in fname else fname
+            if date_pat.match(stem):
+                cached_dates.add(stem)
+
+    if not cached_dates:
+        return
+
+    db_dates = db.dates_already_in_db(conn)
+    covered = cached_dates & db_dates
+    missing = sorted(cached_dates - db_dates)
+    pct = 100 * len(covered) / len(cached_dates) if cached_dates else 0
+
+    print(f"  Coverage: {len(covered)} of {len(cached_dates)} "
+          f"phish.in shows ({pct:.1f}%)")
+    if missing:
+        sample = missing[:10]
+        print(f"  Missing dates ({len(missing)} total): "
+              f"{', '.join(sample)}{'...' if len(missing) > 10 else ''}")
 
 
 def cmd_export(args):

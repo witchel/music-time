@@ -122,3 +122,21 @@ class TestProcessShowFromCache:
         _process_show_from_cache(conn, data, set(), verbose=False)
         row = conn.execute("SELECT source_url FROM releases").fetchone()
         assert row["source_url"] == "https://phish.in/2003-07-25"
+
+    def test_year_below_min_skipped(self, conn):
+        """Shows before CONCERT_YEAR_MIN are skipped."""
+        data = self._make_cached_show(date="1980-06-01")
+        r, t = _process_show_from_cache(conn, data, set(), verbose=False)
+        assert (r, t) == (0, 0)
+
+    def test_year_above_max_skipped(self, conn):
+        """Shows after CONCERT_YEAR_MAX are skipped."""
+        data = self._make_cached_show(date="2099-01-01")
+        r, t = _process_show_from_cache(conn, data, set(), verbose=False)
+        assert (r, t) == (0, 0)
+
+    def test_year_at_min_boundary(self, conn):
+        """Shows at CONCERT_YEAR_MIN are accepted."""
+        data = self._make_cached_show(date="1983-12-02")
+        r, t = _process_show_from_cache(conn, data, set(), verbose=False)
+        assert r == 1

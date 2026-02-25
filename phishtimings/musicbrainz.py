@@ -23,6 +23,7 @@ from gdtimings.location import normalize_state
 from phishtimings import db
 from phishtimings.config import (
     MB_CACHE_DIR,
+    MB_COVERAGE_OVERRIDES,
     MUSICBRAINZ_ARTIST_ID,
     MUSICBRAINZ_RATE_LIMIT,
     CONCERT_YEAR_MIN,
@@ -209,11 +210,13 @@ def _fetch_rg_to_cache(rg, cache_dir, max_age_seconds=0, force=False, verbose=Tr
 
 # ── Phase 2: Process cache → DB ─────────────────────────────────────
 
-def _process_release_from_cache(conn, cached_data, coverage, verbose=True):
+def _process_release_from_cache(conn, cached_data, coverage, existing_dates,
+                                verbose=True):
     """Process cached release data, creating per-date release records.
 
     For multi-concert releases, creates one release per concert date.
     Falls back to release group title for date/location when disc titles lack dates.
+    Skips dates already covered by any source (date-dedup).
 
     Returns (releases_added, tracks_added).
     """
@@ -268,6 +271,10 @@ def _process_release_from_cache(conn, cached_data, coverage, verbose=True):
         if db.release_exists(conn, source_id):
             continue
 
+        # Skip if any source already has this date
+        if concert_date in existing_dates:
+            continue
+
         release_id = db.insert_release(
             conn,
             source_type="musicbrainz",
@@ -310,6 +317,8 @@ def _process_release_from_cache(conn, cached_data, coverage, verbose=True):
                     duration_seconds=duration_secs,
                 )
                 tracks_added += 1
+
+        existing_dates.add(concert_date)
 
         if verbose:
             print(f"    {title} [{concert_date}]: {global_track_num} tracks")
@@ -369,6 +378,7 @@ def scrape_all(conn, full=False, max_age_days=0, verbose=True):
     if verbose:
         print("  Phase 2: Processing cached releases into DB...")
 
+    existing_dates = db.dates_already_in_db(conn)
     total_releases = 0
     total_tracks = 0
 
@@ -381,8 +391,10 @@ def scrape_all(conn, full=False, max_age_days=0, verbose=True):
         if not cached_data:
             continue
 
+        coverage = MB_COVERAGE_OVERRIDES.get(rg_id, "complete")
         r, t = _process_release_from_cache(
-            conn, cached_data, coverage="complete", verbose=verbose
+            conn, cached_data, coverage=coverage,
+            existing_dates=existing_dates, verbose=verbose,
         )
         total_releases += r
         total_tracks += t

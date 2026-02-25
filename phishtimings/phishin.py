@@ -24,6 +24,8 @@ from phishtimings.config import (
     PI_CACHE_DIR,
     PI_API_BASE,
     PI_RATE_LIMIT,
+    CONCERT_YEAR_MIN,
+    CONCERT_YEAR_MAX,
 )
 from phishtimings.normalize import normalize_song
 
@@ -103,6 +105,17 @@ def _process_show_from_cache(conn, cached_data, existing_dates, verbose=True):
     """
     date_str = cached_data.get("date")
     if not date_str:
+        return 0, 0
+
+    # Validate year range
+    try:
+        year = int(date_str[:4])
+    except (ValueError, IndexError):
+        return 0, 0
+    if not (CONCERT_YEAR_MIN <= year <= CONCERT_YEAR_MAX):
+        if verbose:
+            print(f"    Skipping {date_str}: year {year} out of range "
+                  f"[{CONCERT_YEAR_MIN}-{CONCERT_YEAR_MAX}]")
         return 0, 0
 
     source_id = f"pi:{date_str}"

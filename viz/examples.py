@@ -52,6 +52,36 @@ def _save_plot(fig, filename, dpi=200):
     print(f"  {filename}")
 
 
+_SHARE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB target
+
+
+def _save_shareable(fig, filename, dpi=120):
+    """Save a tighter, smaller version for email/phone sharing.
+
+    Uses bbox_inches='tight' to crop border whitespace and a small
+    pad_inches for breathing room.  Target: <5MB per image so two
+    fit within Gmail's 25MB limit.  ~2500-3000px on the long edge.
+
+    If the initial save exceeds the target, retries at lower DPI.
+    Saved alongside the full version with a '_share' suffix.
+    """
+    share_name = filename.replace(".png", "_share.png")
+    path = OUTPUT_DIR / share_name
+    save_kwargs = dict(facecolor=fig.get_facecolor(),
+                       bbox_inches="tight", pad_inches=0.2)
+
+    fig.savefig(path, dpi=dpi, **save_kwargs)
+    sz = path.stat().st_size
+
+    # Retry at lower DPI if over target
+    while sz > _SHARE_MAX_BYTES and dpi > 80:
+        dpi -= 10
+        fig.savefig(path, dpi=dpi, **save_kwargs)
+        sz = path.stat().st_size
+
+    print(f"  {share_name} ({sz / 1e6:.1f}MB, {dpi}dpi)")
+
+
 def _add_duration_legend(ax, durs, **kwargs):
     """Add a 5-bin duration legend to the axes.
 
@@ -658,7 +688,9 @@ def _plot_sunflower_flow(conn, curve_type="hilbert"):
     cb.ax.xaxis.set_label_position("top")
     plt.setp(cb.ax.xaxis.get_ticklabels(), color=LABEL_COLOR)
 
-    _save_plot(fig, _CURVE_FILENAMES[("flow", curve_type)])
+    fname = _CURVE_FILENAMES[("flow", curve_type)]
+    _save_shareable(fig, fname)
+    _save_plot(fig, fname)
 
 
 def plot_hilbert(conn):
@@ -755,7 +787,9 @@ def _plot_strip(conn, curve_type="hilbert"):
                  fontsize=15, pad=14, color=LABEL_COLOR)
 
     _add_duration_legend(ax, all_durs, bbox_to_anchor=(0.5, 1.0))
-    _save_plot(fig, _CURVE_FILENAMES[("strip", curve_type)])
+    fname = _CURVE_FILENAMES[("strip", curve_type)]
+    _save_shareable(fig, fname)
+    _save_plot(fig, fname)
 
 
 def plot_hilbert_strip(conn):
@@ -860,7 +894,9 @@ def _plot_duration_sunflower(conn, curve_type="hilbert", mobile=False):
         _save_plot(fig, fname, dpi=100)
     else:
         _add_duration_legend(ax, durs)
-        _save_plot(fig, _CURVE_FILENAMES[("duration", curve_type)], dpi=250)
+        fname = _CURVE_FILENAMES[("duration", curve_type)]
+        _save_shareable(fig, fname)
+        _save_plot(fig, fname, dpi=250)
 
 
 def plot_hilbert_duration(conn):
@@ -1268,9 +1304,11 @@ def _plot_duration_era(conn, curve_type="hilbert",
         _save_plot(fig, fname, dpi=100)
     elif curve_type == "hilbert":
         fname = _CURVE_FILENAMES[("duration_era", "hilbert")]
+        _save_shareable(fig, fname)
         _save_plot(fig, fname, dpi=250)
     else:
         fname = f"09_gosper_duration_era{suffix}.png"
+        _save_shareable(fig, fname)
         _save_plot(fig, fname, dpi=250)
 
 

@@ -49,6 +49,9 @@ def clean_title(raw):
     if not s:
         return ""
 
+    # Strip phish.in soundcheck prefix: "(Check) Funky Bitch" → "Funky Bitch"
+    s = re.sub(r'^\(Check\)\s*', '', s, flags=re.IGNORECASE)
+
     # Strip segue markers FIRST (so segment labels become end-anchored)
     s = re.sub(r'\s*-?[>→]+\s*$', '', s)
 

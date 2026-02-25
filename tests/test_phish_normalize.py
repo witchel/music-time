@@ -93,6 +93,18 @@ class TestCleanTitle:
         """Segue arrow + continued both stripped."""
         assert clean_title("Tweezer continued ->") == "Tweezer"
 
+    # Soundcheck prefix
+    def test_strip_check_prefix(self):
+        """phish.in soundcheck prefix is stripped."""
+        assert clean_title("(Check) Funky Bitch") == "Funky Bitch"
+
+    def test_strip_check_banter_is_non_song(self):
+        """(Check) Banter still filters as non-song after prefix strip."""
+        assert clean_title("(Check) Banter") == ""
+
+    def test_strip_check_jam(self):
+        assert clean_title("(Check) Jam") == "Jam"
+
 
 class TestNormalizeSong:
     """Test normalize_song DB integration."""

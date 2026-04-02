@@ -25,7 +25,11 @@ def api_get_with_retry(session, url, params=None, rate_limit=0.5, max_retries=3)
     for attempt in range(max_retries):
         resp = session.get(url, params=params)
         if resp.status_code == 429 or resp.status_code >= 500:
-            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
+            raw_retry = resp.headers.get("Retry-After")
+            try:
+                retry_after = int(raw_retry) if raw_retry else 2 ** attempt
+            except ValueError:
+                retry_after = 2 ** attempt  # HTTP-date or unparseable
             print(f"    HTTP {resp.status_code}, retrying in {retry_after}s "
                   f"(attempt {attempt + 1}/{max_retries})")
             time.sleep(retry_after)

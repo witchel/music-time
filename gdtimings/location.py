@@ -65,8 +65,15 @@ def is_us_state(text):
     """Return True if text is a US state name or abbreviation."""
     if not text:
         return False
-    text = text.strip()
-    return text.upper() in US_STATE_ABBREV or text in _FULL_STATE_NAMES
+    text = text.strip().rstrip(".,")
+    if not text:
+        return False
+    upper = text.upper()
+    nodots = upper.replace(".", "")
+    return (upper in US_STATE_ABBREV
+            or text in _FULL_STATE_NAMES
+            or nodots in US_STATE_ABBREV
+            or nodots in _INFORMAL_ABBREV)
 
 
 def parse_city_state(text):

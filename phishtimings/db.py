@@ -10,7 +10,6 @@ from gdtimings.db import (  # noqa: F401 — re-export everything
     set_scrape_state,
     release_exists,
     insert_release,
-    update_release,
     get_or_create_song,
     get_song_by_alias,
     add_alias,

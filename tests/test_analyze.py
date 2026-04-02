@@ -200,6 +200,43 @@ class TestComputeSongStats:
         assert row["times_played"] == 1
         assert row["std_duration"] == 0.0
 
+    def test_outlier_flags_reset_on_recompute(self, conn):
+        """Stale outlier flags should be cleared when stats are recomputed."""
+        normal_dates = [(f"1977-05-{d:02d}", [600]) for d in range(1, 21)]
+        song_id = self._setup_song(conn, "Flagged Song", [
+            *normal_dates,
+            ("1977-06-01", [3000]),  # outlier
+        ])
+        compute_song_stats(conn, verbose=False)
+
+        # Verify outlier was flagged
+        outliers = conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE song_id = ? AND is_outlier = 1",
+            (song_id,),
+        ).fetchone()["n"]
+        assert outliers > 0
+
+        # Delete tracks so song drops below MIN_SAMPLES_FOR_STATS
+        all_tracks = conn.execute(
+            "SELECT t.id FROM tracks t JOIN releases r ON t.release_id = r.id "
+            "WHERE t.song_id = ? ORDER BY r.concert_date",
+            (song_id,),
+        ).fetchall()
+        keep_ids = {all_tracks[0]["id"], all_tracks[1]["id"]}
+        for t in all_tracks:
+            if t["id"] not in keep_ids:
+                conn.execute("DELETE FROM tracks WHERE id = ?", (t["id"],))
+        conn.commit()
+
+        # Recompute — should clear the stale outlier flag
+        compute_song_stats(conn, verbose=False)
+
+        stale = conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE song_id = ? AND is_outlier = 1",
+            (song_id,),
+        ).fetchone()["n"]
+        assert stale == 0
+
 
 class TestClassifySongTypes:
     """Tests for song type classification and view filtering."""

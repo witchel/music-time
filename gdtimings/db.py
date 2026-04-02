@@ -1,6 +1,7 @@
 """SQLite schema, connection, and all DB operations."""
 
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     UNIQUE(release_id, disc_number, track_number)
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_song ON tracks(song_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_release ON tracks(release_id);
 
 CREATE TABLE IF NOT EXISTS scrape_state (
     key   TEXT PRIMARY KEY,
@@ -94,7 +96,7 @@ FROM (
            s.song_type,
            r.concert_date,
            r.concert_year,
-           CAST(SUBSTR(r.concert_date, 6, 2) AS INTEGER) AS concert_month,
+           r.concert_month,
            r.state,
            t.set_name,
            r.coverage,
@@ -166,7 +168,6 @@ def _parse_date_parts(concert_date):
     """Extract (year, month, day) integers from an ISO date string."""
     if not concert_date:
         return None, None, None
-    import re
     m = re.match(r'(\d{4})-(\d{2})-(\d{2})', concert_date)
     if m:
         return int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -193,16 +194,6 @@ def insert_release(conn, *, source_type, source_id, title=None, concert_date=Non
          taper, lineage, source_detail, now),
     )
     return cur.lastrowid
-
-
-def update_release(conn, release_id, **fields):
-    if not fields:
-        return
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    conn.execute(
-        f"UPDATE releases SET {set_clause} WHERE id = ?",
-        (*fields.values(), release_id),
-    )
 
 
 # ── Songs ──────────────────────────────────────────────────────────────
@@ -239,10 +230,17 @@ def insert_track(conn, *, release_id, title_raw, disc_number=1, track_number,
                  song_id=None, set_name=None, duration_seconds=None,
                  writers=None, segue=0):
     conn.execute(
-        """INSERT OR REPLACE INTO tracks
+        """INSERT INTO tracks
            (release_id, song_id, title_raw, disc_number, track_number,
             set_name, duration_seconds, writers, segue)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(release_id, disc_number, track_number) DO UPDATE SET
+            song_id = excluded.song_id,
+            title_raw = excluded.title_raw,
+            set_name = excluded.set_name,
+            duration_seconds = excluded.duration_seconds,
+            writers = excluded.writers,
+            segue = excluded.segue""",
         (release_id, song_id, title_raw, disc_number, track_number,
          set_name, duration_seconds, writers, segue),
     )

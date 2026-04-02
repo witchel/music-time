@@ -163,7 +163,7 @@ def main():
     p_scrape.add_argument("--full", action="store_true",
                           help="Re-scrape everything (ignore prior state)")
     p_scrape.add_argument("--workers", type=int, default=None,
-                          help="Number of parallel fetch workers (default: 8)")
+                          help="Number of parallel fetch workers (default: 64)")
     p_scrape.add_argument("--no-cache", action="store_true",
                           help="Disable local JSON cache (sequential fetching)")
     p_scrape.add_argument("--max-age", type=int, default=0,

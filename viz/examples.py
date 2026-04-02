@@ -21,7 +21,6 @@ from viz.curves import (
     smooth_hilbert as _smooth_hilbert,
     precompute_gosper as _precompute_gosper,
     BIN_COLORS,
-    BIN_LABELS,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -137,7 +136,7 @@ def plot_streamgraph(conn):
     total_pct = y_pct.sum(axis=0)
     baseline = -total_pct / 2
 
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig, ax = _create_dark_figure((14, 6))
     cmap = plt.cm.tab10
     bottom = baseline.copy()
     for i, song in enumerate(top10):
@@ -147,14 +146,18 @@ def plot_streamgraph(conn):
         bottom = bottom + y_pct[i]
 
     ax.set_xlim(years[0], years[-1])
-    ax.set_title("Streamgraph — Share of Performance Time (top 10 songs)")
-    ax.set_ylabel("% of recorded time (centered)")
-    ax.set_xlabel("Year")
-    ax.legend(loc="upper left", fontsize=10, ncol=2, framealpha=0.9)
+    ax.set_title("Streamgraph — Share of Performance Time (top 10 songs)",
+                 color=LABEL_COLOR)
+    ax.set_ylabel("% of recorded time (centered)", color=LABEL_COLOR)
+    ax.set_xlabel("Year", color=LABEL_COLOR)
+    ax.tick_params(colors=LABEL_COLOR)
+    for spine in ax.spines.values():
+        spine.set_color("#444")
+    ax.legend(loc="upper left", fontsize=10, ncol=2, framealpha=0.9,
+              facecolor=DARK_BG, edgecolor="#444", labelcolor=LABEL_COLOR)
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "01_streamgraph.png", dpi=150)
-    plt.close(fig)
-    print("  01_streamgraph.png")
+    _save_shareable(fig, "01_streamgraph.png")
+    _save_plot(fig, "01_streamgraph.png", dpi=150)
 
 
 # Fixed threshold for the gigantous bin (absolute, not percentile-based).
@@ -175,11 +178,15 @@ def _duration_thresholds(durs):
 def _duration_bins(durs):
     """Assign each duration to one of 5 bins (0 = longest).
 
-    Bin 0 (Gigantous) uses a fixed 25-min threshold — these are rare
+    Bin 0 (Gigantous) uses a fixed 25-min threshold -- these are rare
     outlier performances (11 of 626 PITB).  Bins 1-4 use quartile splits
-    of the remaining data.
+    of the remaining (non-Gigantous) data.
     """
-    q75, q50, q25 = _duration_thresholds(durs)
+    remaining = durs[durs < _GIGANTOUS_THRESHOLD]
+    if len(remaining) == 0:
+        # All durations are Gigantous -- everything is bin 0
+        return np.zeros(len(durs), dtype=int)
+    q75, q50, q25 = _duration_thresholds(remaining)
     bins = np.empty(len(durs), dtype=int)
     for i, d in enumerate(durs):
         if d >= _GIGANTOUS_THRESHOLD:
@@ -526,6 +533,7 @@ _CURVE_FILENAMES = {
     ("duration", "hilbert"): "06_hilbert_duration_sunflower.png",
     ("duration", "gosper"): "07_gosper_duration_sunflower.png",
     ("duration_era", "hilbert"): "08_hilbert_duration_era.png",
+    ("duration_era", "gosper"): "09_gosper_duration_era.png",
 }
 
 
@@ -723,7 +731,6 @@ def _plot_strip(conn, curve_type="hilbert"):
 
     bins = _duration_bins(all_durs)
     bin_to_order = cfg["bin_to_order"]
-    lw_map = cfg["lw_map"]
     base_size = cfg["base_size"]
 
     fig, ax = _create_dark_figure((24, 30))
@@ -749,14 +756,12 @@ def _plot_strip(conn, curve_type="hilbert"):
             xs, ys = _draw_hilbert_tile(
                 ax, *curve_data[order], size, cx, cy, rot,
                 fill_color, line_color, lw, zorder)
-            tile_start = (xs[0], ys[0])
             tile_end = (xs[-1], ys[-1])
         else:
             rx, ry = _draw_gosper_tile(
                 ax, curve_data[order].copy(), gosper_angles[order],
                 size, cx, cy, rot,
                 fill_color, line_color, lw, zorder)
-            tile_start = (rx[0], ry[0])
             tile_end = (rx[-1], ry[-1])
 
         # Connect to previous tile in same row with light gray bridge
@@ -821,7 +826,6 @@ def _plot_duration_sunflower(conn, curve_type="hilbert"):
 
     bins = _duration_bins(durs)
     bin_to_order = cfg["bin_to_order"]
-    lw_map = cfg["lw_map"]
     base_size = cfg["base_size"]
     scale = cfg["size_scale"]
 
@@ -1213,7 +1217,6 @@ def _plot_duration_era(conn, curve_type="hilbert",
 
     bins = _duration_bins(durs)
     bin_to_order = cfg["bin_to_order"]
-    lw_map = cfg["lw_map"]
     base_size = cfg["base_size"]
     scale = cfg["size_scale"]
 
@@ -1275,10 +1278,8 @@ def _plot_duration_era(conn, curve_type="hilbert",
 
     _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 
-    if curve_type == "hilbert":
-        fname = _CURVE_FILENAMES[("duration_era", "hilbert")]
-    else:
-        fname = f"09_gosper_duration_era{suffix}.png"
+    base = _CURVE_FILENAMES[("duration_era", curve_type)]
+    fname = base.replace(".png", f"{suffix}.png") if suffix else base
     _save_shareable(fig, fname)
     _save_plot(fig, fname, dpi=250)
 

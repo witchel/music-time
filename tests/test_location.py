@@ -61,8 +61,18 @@ class TestIsUsState:
     def test_full_name(self):
         assert is_us_state("California") is True
 
+    def test_dotted_abbreviation(self):
+        assert is_us_state("R.I.") is True
+        assert is_us_state("D.C.") is True
+        assert is_us_state("N.J.") is True
+
+    def test_informal_abbreviation(self):
+        assert is_us_state("Mass") is True
+        assert is_us_state("Conn") is True
+
     def test_non_us(self):
         assert is_us_state("England") is False
+        assert is_us_state("Ontario") is False
 
     def test_empty(self):
         assert is_us_state("") is False

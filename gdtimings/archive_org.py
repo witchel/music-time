@@ -250,8 +250,8 @@ def _fetch_to_cache(identifier, cache_dir, max_age_seconds=0):
         if data:
             _write_cache(cache_dir, identifier, data)
             return identifier, True
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    WARN: {identifier}: {type(e).__name__}: {e}")
     return identifier, False
 
 
@@ -294,37 +294,37 @@ def _process_from_cache(conn, identifier, data):
 
     title = metadata.get("title", identifier)
 
-    release_id = db.insert_release(
-        conn,
-        source_type="archive.org",
-        source_id=source_id,
-        title=title,
-        concert_date=concert_date,
-        venue=venue,
-        city=city,
-        state=state,
-        coverage="unedited",
-        recording_type=rec_type,
-        quality_rank=quality_rank,
-        source_url=f"https://archive.org/details/{identifier}",
-        taper=taper,
-        lineage=lineage,
-        source_detail=source_detail,
-    )
-
-    for t in tracks:
-        song_id, _, _ = normalize_song(conn, t["title_raw"])
-        db.insert_track(
+    with conn:
+        release_id = db.insert_release(
             conn,
-            release_id=release_id,
-            title_raw=t["title_raw"],
-            disc_number=1,
-            track_number=t["track"],
-            song_id=song_id,
-            duration_seconds=t["duration"],
-            segue=0,
+            source_type="archive.org",
+            source_id=source_id,
+            title=title,
+            concert_date=concert_date,
+            venue=venue,
+            city=city,
+            state=state,
+            coverage="unedited",
+            recording_type=rec_type,
+            quality_rank=quality_rank,
+            source_url=f"https://archive.org/details/{identifier}",
+            taper=taper,
+            lineage=lineage,
+            source_detail=source_detail,
         )
-    conn.commit()
+
+        for t in tracks:
+            song_id, _, _ = normalize_song(conn, t["title_raw"])
+            db.insert_track(
+                conn,
+                release_id=release_id,
+                title_raw=t["title_raw"],
+                disc_number=1,
+                track_number=t["track"],
+                song_id=song_id,
+                duration_seconds=t["duration"],
+                segue=0,
+            )
 
     return release_id, len(tracks)
 
@@ -390,14 +390,16 @@ def scrape_all(conn, full=False, verbose=True, workers=None, use_cache=True,
 
     # ── Pre-filter: skip identifiers already in DB (unless --full) ──
     if not full:
-        existing = set()
-        for ident in identifiers:
-            source_id = f"archive:{ident}"
-            if db.release_exists(conn, source_id):
-                existing.add(ident)
-        if existing and verbose:
-            print(f"  Skipping {len(existing)} identifiers already in DB")
-        identifiers = [i for i in identifiers if i not in existing]
+        rows = conn.execute(
+            "SELECT source_id FROM releases WHERE source_type = 'archive.org'"
+        ).fetchall()
+        existing_source_ids = {row["source_id"] for row in rows}
+        before = len(identifiers)
+        identifiers = [i for i in identifiers
+                       if f"archive:{i}" not in existing_source_ids]
+        skipped = before - len(identifiers)
+        if skipped and verbose:
+            print(f"  Skipping {skipped} identifiers already in DB")
 
     if not identifiers:
         if verbose:

@@ -184,6 +184,10 @@ def compute_song_stats(conn, verbose=True):
     split songs and multiple tapers don't skew the results.
     """
     show_data = _per_show_durations(conn)
+
+    # Reset all outlier flags — will be re-set below for qualifying songs
+    conn.execute("UPDATE tracks SET is_outlier = 0 WHERE is_outlier != 0")
+
     updated = 0
     outliers_found = 0
 

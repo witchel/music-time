@@ -295,6 +295,16 @@ for canonical, aliases in CANONICAL_SONGS.items():
 # All canonical names for fuzzy matching
 _CANONICAL_NAMES = list(CANONICAL_SONGS.keys())
 
+# Cache for established DB songs (populated on first miss in normalize_song)
+_established_songs_cache = None
+
+
+def invalidate_established_cache():
+    """Clear the established-songs cache (call after DB changes)."""
+    global _established_songs_cache
+    _established_songs_cache = None
+
+
 # ── Non-song words ────────────────────────────────────────────────────
 # After cleaning, titles matching these are classified as non-songs (song_id=NULL).
 _NON_SONG_WORDS = frozenset({
@@ -671,23 +681,26 @@ def normalize_song(conn, raw_title):
         return song_id, canonical, "fuzzy"
 
     # 5. Fuzzy match against established DB songs (>=50 tracks)
-    db_songs = conn.execute(
-        """SELECT s.canonical_name
-           FROM songs s
-           JOIN tracks t ON t.song_id = s.id
-           GROUP BY s.id
-           HAVING COUNT(t.id) >= 50"""
-    ).fetchall()
-    if db_songs:
-        db_names = [row["canonical_name"] for row in db_songs]
+    global _established_songs_cache
+    if _established_songs_cache is None:
+        db_songs = conn.execute(
+            """SELECT s.canonical_name
+               FROM songs s
+               JOIN tracks t ON t.song_id = s.id
+               GROUP BY s.id
+               HAVING COUNT(t.id) >= 50"""
+        ).fetchall()
+        _established_songs_cache = [row["canonical_name"] for row in db_songs]
+
+    if _established_songs_cache:
         db_matches = difflib.get_close_matches(
-            lower, [n.lower() for n in db_names],
+            lower, [n.lower() for n in _established_songs_cache],
             n=1, cutoff=FUZZY_AUTO_THRESHOLD,
         )
         if db_matches:
             matched_lower = db_matches[0]
-            # Find the original-cased canonical name
-            canonical = next(n for n in db_names if n.lower() == matched_lower)
+            canonical = next(n for n in _established_songs_cache
+                             if n.lower() == matched_lower)
             song_id = db.get_or_create_song(conn, canonical)
             db.add_alias(conn, lower, song_id, "auto_fuzzy_db")
             return song_id, canonical, "fuzzy"
@@ -736,4 +749,5 @@ def prune_rare_songs(conn, min_tracks=3):
         pruned += 1
 
     conn.commit()
+    invalidate_established_cache()
     return pruned

@@ -123,9 +123,14 @@ def scrape_series(conn, series_name, series_mbid, coverage, verbose=True):
 
     # Get release groups linked to this series
     _rate_limit()
-    result = musicbrainzngs.get_series_by_id(
-        series_mbid, includes=["release-group-rels"]
-    )
+    try:
+        result = musicbrainzngs.get_series_by_id(
+            series_mbid, includes=["release-group-rels"]
+        )
+    except musicbrainzngs.WebServiceError as e:
+        if verbose:
+            print(f"    Error fetching series {series_name}: {e}")
+        return releases_added, tracks_added
     rels = result.get("series", {}).get("release_group-relation-list", [])
 
     if not rels:
@@ -198,51 +203,51 @@ def _process_release(conn, release_mbid, coverage, verbose=True):
         if db.release_exists(conn, source_id):
             continue
 
-        release_id = db.insert_release(
-            conn,
-            source_type="musicbrainz",
-            source_id=source_id,
-            title=title,
-            concert_date=concert_date,
-            coverage=coverage,
-            recording_type="official",
-            quality_rank=500,
-            source_url=f"https://musicbrainz.org/release/{release_mbid}",
-        )
-        releases_added += 1
+        with conn:
+            release_id = db.insert_release(
+                conn,
+                source_type="musicbrainz",
+                source_id=source_id,
+                title=title,
+                concert_date=concert_date,
+                coverage=coverage,
+                recording_type="official",
+                quality_rank=500,
+                source_url=f"https://musicbrainz.org/release/{release_mbid}",
+            )
+            releases_added += 1
 
-        # Insert tracks from all media for this date
-        global_track_num = 0
-        for medium, track_list in media_tracks:
-            disc_num = int(medium.get("position", 1))
-            for track in track_list:
-                global_track_num += 1
-                recording = track.get("recording", {})
-                track_title = recording.get("title", track.get("title", ""))
-                length_ms = track.get("length") or recording.get("length")
+            # Insert tracks from all media for this date
+            global_track_num = 0
+            for medium, track_list in media_tracks:
+                disc_num = int(medium.get("position", 1))
+                for track in track_list:
+                    global_track_num += 1
+                    recording = track.get("recording", {})
+                    track_title = recording.get("title", track.get("title", ""))
+                    length_ms = track.get("length") or recording.get("length")
 
-                duration_secs = None
-                if length_ms:
-                    duration_secs = int(length_ms) / 1000.0
+                    duration_secs = None
+                    if length_ms:
+                        duration_secs = int(length_ms) / 1000.0
 
-                # Normalize the song title
-                song_id, _, _ = normalize_song(conn, track_title)
+                    # Normalize the song title
+                    song_id, _, _ = normalize_song(conn, track_title)
 
-                db.insert_track(
-                    conn,
-                    release_id=release_id,
-                    title_raw=track_title,
-                    disc_number=disc_num,
-                    track_number=global_track_num,
-                    song_id=song_id,
-                    duration_seconds=duration_secs,
-                )
-                tracks_added += 1
+                    db.insert_track(
+                        conn,
+                        release_id=release_id,
+                        title_raw=track_title,
+                        disc_number=disc_num,
+                        track_number=global_track_num,
+                        song_id=song_id,
+                        duration_seconds=duration_secs,
+                    )
+                    tracks_added += 1
 
         if verbose:
-            print(f"    {title} [{concert_date}]: {tracks_added} tracks")
+            print(f"    {title} [{concert_date}]: {global_track_num} tracks")
 
-    conn.commit()
     return releases_added, tracks_added
 
 

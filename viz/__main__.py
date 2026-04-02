@@ -10,7 +10,7 @@ parser.add_argument(
     choices=["positive", "negative"],
     default="positive",
     help="Tile rendering style: colored lines on dark bg (positive) "
-    "or colored fill with dark lines (negative, default)",
+    "or colored fill with dark lines (negative)",
 )
 args = parser.parse_args()
 main(tile_mode=args.tile_mode)

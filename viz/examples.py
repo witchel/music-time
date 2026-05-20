@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.patheffects as path_effects
 from matplotlib.patches import Patch
 import numpy as np
 
@@ -1132,7 +1133,11 @@ def _label_radius_at_angle(angle, tile_cx, tile_cy, tile_sizes, gap=5.0):
 
 
 def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
-                                tile_cx, tile_cy, tile_sizes, pad=3.5):
+                                tile_cx, tile_cy, tile_sizes, pad=3.5,
+                                fontsize=14, label_gap=5.0,
+                                label_box_alpha=0.7,
+                                label_outline=False,
+                                label_positions=None):
     """Draw radial spokes and era labels just outside the tiles.
 
     Each label is placed near the upper (start) spoke of its wedge,
@@ -1155,18 +1160,30 @@ def _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
             label_angle = start + bias * (end - start)
         else:
             label_angle = end - bias * (end - start)
-        label_r = _label_radius_at_angle(
-            label_angle, tile_cx, tile_cy, tile_sizes, gap=5.0)
-        lx = label_r * np.cos(label_angle)
-        ly = label_r * np.sin(label_angle)
+        if label_positions and name in label_positions:
+            x_frac, y_frac = label_positions[name]
+            lx = x_frac * r_outer
+            ly = y_frac * r_outer
+        else:
+            label_r = _label_radius_at_angle(
+                label_angle, tile_cx, tile_cy, tile_sizes, gap=label_gap)
+            lx = label_r * np.cos(label_angle)
+            ly = label_r * np.sin(label_angle)
 
         year_str = f"{y0}–{y1}" if y0 != y1 else str(y0)
         label = f"{name}\n{year_str}"
-        ax.text(lx, ly, label, color=LABEL_COLOR, fontsize=14, fontweight="bold",
-                ha="center", va="center", rotation=0,
-                alpha=0.85, zorder=10,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor=DARK_BG,
-                          edgecolor="none", alpha=0.7))
+        bbox = None
+        if label_box_alpha > 0:
+            bbox = dict(boxstyle="round,pad=0.16", facecolor=DARK_BG,
+                        edgecolor="none", alpha=label_box_alpha)
+        text = ax.text(lx, ly, label, color=LABEL_COLOR, fontsize=fontsize,
+                       fontweight="bold",
+                       ha="center", va="center", rotation=0,
+                       alpha=0.85, zorder=10, bbox=bbox)
+        if label_outline:
+            text.set_path_effects([
+                path_effects.withStroke(linewidth=3.5, foreground=DARK_BG)
+            ])
 
 
 
@@ -1196,7 +1213,13 @@ def _gosper_tile_rotations(n_tiles, mode, rng):
 
 
 def _plot_duration_era(conn, curve_type="hilbert",
-                       rotation_mode="aligned", suffix=""):
+                       rotation_mode="aligned", suffix="",
+                       era_label_fontsize=14,
+                       era_label_gap=5.0,
+                       era_label_box_alpha=0.7,
+                       era_label_outline=False,
+                       era_label_positions=None,
+                       show_title_legend=True):
     """Era-segmented sunflower, duration-sorted within each wedge.
 
     curve_type: "hilbert" | "gosper"
@@ -1238,7 +1261,12 @@ def _plot_duration_era(conn, curve_type="hilbert",
     fig, ax = _create_dark_figure((30, 30))
 
     _draw_era_spokes_and_labels(ax, era_boundaries, r_outer,
-                                tile_cx, tile_cy, tile_sizes)
+                                tile_cx, tile_cy, tile_sizes,
+                                fontsize=era_label_fontsize,
+                                label_gap=era_label_gap,
+                                label_box_alpha=era_label_box_alpha,
+                                label_outline=era_label_outline,
+                                label_positions=era_label_positions)
 
     draw_order = sorted(range(n_tiles), key=lambda i: durs[i])
 
@@ -1269,14 +1297,16 @@ def _plot_duration_era(conn, curve_type="hilbert",
     ax.set_aspect("equal")
     ax.axis("off")
 
-    curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
-    subtitle = (f"{n_tiles} performances  ·  "
-                f"tile area proportional to performance length")
-    ax.set_title(f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
-                 f"{subtitle}",
-                 fontsize=15, pad=14, color=LABEL_COLOR)
+    if show_title_legend:
+        curve_label = "Hilbert" if curve_type == "hilbert" else "Gosper"
+        subtitle = (f"{n_tiles} performances  ·  "
+                    f"tile area proportional to performance length")
+        ax.set_title(
+            f"Playing in the Band — {curve_label} Duration Sunflower by Era\n"
+            f"{subtitle}",
+            fontsize=15, pad=14, color=LABEL_COLOR)
 
-    _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
+        _add_duration_legend(ax, durs, bbox_to_anchor=(0.5, 1.0))
 
     base = _CURVE_FILENAMES[("duration_era", curve_type)]
     fname = base.replace(".png", f"{suffix}.png") if suffix else base
@@ -1291,6 +1321,21 @@ def plot_hilbert_duration_era(conn):
 def plot_gosper_duration_era(conn, rotation_mode="aligned", suffix=""):
     _plot_duration_era(conn, curve_type="gosper",
                        rotation_mode=rotation_mode, suffix=suffix)
+
+
+def plot_gosper_duration_era_slide(conn):
+    """Gosper duration-era export with labels sized for slide use."""
+    _plot_duration_era(conn, curve_type="gosper",
+                       rotation_mode="aligned", suffix="_slide",
+                       era_label_fontsize=42,
+                       era_label_gap=9.5,
+                       era_label_box_alpha=0.0,
+                       era_label_outline=True,
+                       era_label_positions={
+                           "Transition": (-0.32, 0.82),
+                           "Post-Hiatus": (0.36, 0.82),
+                       },
+                       show_title_legend=False)
 
 
 # ══════════════════════════════════════════════════════════════════════════
